@@ -4,6 +4,11 @@
 #include <unordered_map>
 #include <filesystem>
 
+/* I think we should add external C here for conpatiblity with the GNC compiler so someone can use it for different lagnues and compile wiht other ABI rules i.e C,cpp,fortan
+
+
+*/
+
 class CaesarModelLoader {
 private:
     std::unordered_map<std::string, torch::Tensor> tensors;
