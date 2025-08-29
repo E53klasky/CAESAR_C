@@ -1,5 +1,6 @@
 #include "normalize.h"
 
+/// probly test this I think the sytax is right 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 normalize_latent(const torch::Tensor& x) {
     auto xMin = torch::amin(x, {1, 2, 3, 4}, true);
