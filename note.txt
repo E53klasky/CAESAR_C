@@ -12,5 +12,8 @@ Need to have multi build types and other platforms for example must support seri
 3. what c++  year should be done newwerviosn of  c++ will  not be support be older  compiler (I THINK) check into this
 
 4. data distbution
-also note this should be a 2d domain decompolation with ad jnknk  
+also note this should be a 2d domain decompolation with 
+I am thinking obvously leave the first dim alone this is the var.
+but the next 4 arrays I am thinking we find which one varies the least smoothest slopes smallest dirviates those change distbute unless others are large think about this more alterr
+idk
 
