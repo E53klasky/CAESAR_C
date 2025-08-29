@@ -81,7 +81,7 @@ void Compressor::loadCaesarVCompressor(){
             d3=True,
             sr_dim=16
         )
-
+       note I think this is what needs to be changed with the load to my load -?????????????????????????????
         state_dict = self.remove_module_prefix(torch.load(self.pretrained_path, map_location=self.device))
         model.load_state_dict(state_dict)
         self.compressor_v = model.to(self.device).eval()
