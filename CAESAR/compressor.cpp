@@ -8,6 +8,15 @@
 #include "compressor.h"
 #include <iostream>
 
+
+// TODO: I need to convert a PCA class from this file path .ipynb_checkpoints/
+// run_gae_cuda-checkpoint.py
+//i and this file as well     
+////   this is for model D    from .models.video_diffusion_interpo import Unet3D, GaussianDiffusion
+// convert this class as  well    from .models import compress_modules3d_mid_SR as compress_modules
+//
+//
+
 Compressor::Compressor(const std::string& modelPath,
                        bool useDiffusion,
                        const std::string& device,
@@ -21,7 +30,7 @@ Compressor::Compressor(const std::string& modelPath,
       interpolationRate(interpolationRate),
       diffusionSteps(diffusionSteps)
 {
-   // loadModels();  not right now for later
+   loadModels();
 
     condIdx = torch::arange(0, nFrames, interpolationRate);
 
@@ -37,6 +46,7 @@ Compressor::Compressor(const std::string& modelPath,
     // this should be change for later for serial parallel cpu and amd/invida gpu backend
     torch::globalContext().setDeterministicCuDNN(true);
     torch::globalContext().setBenchmarkCuDNN(false);
+
 }
 
 
@@ -95,6 +105,12 @@ void Compressor::loadCaesarDCompressor(){
     std::cout<<"Loading CAESAR-D"<<std::endl;
     std::cout<<"NOT YET ADDED IN USE MODEL V!"<<std::endl;
 }
+
+
+// CompressReturn compress(MyDataset& data, double errorBound){
+// 
+// }
+
 
 
 
