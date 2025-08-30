@@ -17,3 +17,5 @@ I am thinking obvously leave the first dim alone this is the var.
 but the next 4 arrays I am thinking we find which one varies the least smoothest slopes smallest dirviates those change distbute unless others are large think about this more alterr
 idk
 
+
+5. make a test build and a realse build
