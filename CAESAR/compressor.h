@@ -9,7 +9,7 @@
 
 
 struct CompressionResult {
-  // A bit of a guess for right now 
+  // A bit of a guess for right now for datatypes mainly first 2
     std::vector<float> latent;
     std::vector<uint8_t> postProcess;
     std::map<std::string, int> meta_data;
@@ -17,6 +17,23 @@ struct CompressionResult {
     std::vector<int> padding;
     std::vector<int> filteredBlocks;
 
+};
+
+struct MyDataset : torch::data::datasets::Dataset<MyDataset> {
+    torch::Tensor data;
+
+    MyDataset(torch::Tensor d) : data(d) {}
+
+    // test methods i am not sure
+    torch::data::Example<> get(size_t index) override {
+        // just return the whole tensor as a single sample
+        return {data, data};
+    }
+
+    // return the entier dataset
+    torch::optional<size_t> size() const override {
+        return 1;
+    }
 };
 
 
@@ -35,7 +52,7 @@ public:
    std::map<std::string, torch::Tensor> removeModulePrefix(const std::map<std::string, torch::Tensor>& stateDict);
 
    // what the hell is a dataloader look into it more this also needs to be saved
- //  CompressReturn compress(DataLoader& data)
+ CompressReturn compress(MyDataset& data, double errorBound);
 
 
 
