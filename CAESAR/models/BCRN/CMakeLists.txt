@@ -4,6 +4,7 @@ add_library(BCRN
     bcrnModel.h
     blocks.cpp
     blocks.h
+    BSConvU.h
 )
 
 # Include current dir headers
