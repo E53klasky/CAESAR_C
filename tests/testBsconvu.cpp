@@ -2,7 +2,7 @@
 #include <cassert>
 #include <iostream>
 #include <iomanip>
-#include "../CAESAR/models/BCRN/BSConvU.h" // Adjust path as needed
+#include "../CAESAR/models/BCRN/BSConvU.h"
 
 void test_basic_construction() {
     std::cout << "Testing basic construction..." << std::endl;
@@ -24,7 +24,7 @@ void test_forward_pass() {
     // Forward pass - now we can use -> since we have explicit forward method
     torch::Tensor output = model->forward(input);
     
-    // Check output shape
+
     assert(output.dim() == 4);
     assert(output.size(0) == 2);  // batch size
     assert(output.size(1) == 32); // output channels
@@ -47,12 +47,12 @@ void test_different_parameters() {
         
         assert(output.size(0) == 1);
         assert(output.size(1) == 32);
-        assert(output.size(2) == 16); // 32/2 due to stride=2
+        assert(output.size(2) == 16);
         assert(output.size(3) == 16);
-        std::cout << "✓ Stride=2 test passed" << std::endl;
+        std::cout << " Stride=2 test passed" << std::endl;
     }
     
-    // Test with different kernel size
+
     {
         BSConvU model(8, 16, std::make_tuple(5, 5), 1, 2);
         torch::Tensor input = torch::randn({1, 8, 32, 32});
@@ -60,9 +60,9 @@ void test_different_parameters() {
         
         assert(output.size(0) == 1);
         assert(output.size(1) == 16);
-        assert(output.size(2) == 32); // Same due to padding=2, kernel=5
+        assert(output.size(2) == 32);
         assert(output.size(3) == 32);
-        std::cout << "✓ Different kernel size test passed" << std::endl;
+        std::cout << "  Different kernel size test passed" << std::endl;
     }
 }
 
@@ -74,11 +74,11 @@ void test_with_batchnorm() {
     
     torch::Tensor input = torch::randn({2, 16, 32, 32});
     
-    // Both should work
+  
     torch::Tensor output_with_bn = model_with_bn->forward(input);
     torch::Tensor output_without_bn = model_without_bn->forward(input);
     
-    // Same output shape
+   
     assert(output_with_bn.sizes() == output_without_bn.sizes());
     std::cout << "  Batch normalization test passed" << std::endl;
 }
@@ -86,7 +86,7 @@ void test_with_batchnorm() {
 void test_padding_modes() {
     std::cout << "Testing different padding modes..." << std::endl;
     
-    // Test all padding modes
+ 
     std::vector<std::string> padding_modes = {"zeros", "reflect", "replicate", "circular"};
     
     for (const auto& mode : padding_modes) {
@@ -111,11 +111,11 @@ void test_gradient_flow() {
     torch::Tensor input = torch::randn({1, 8, 16, 16}, torch::requires_grad());
     torch::Tensor output = model->forward(input);
     
-    // Compute a simple loss
+
     torch::Tensor loss = output.sum();
     loss.backward();
     
-    // Check that gradients exist
+
     assert(input.grad().defined());
     assert(input.grad().sizes() == input.sizes());
     
@@ -149,7 +149,7 @@ void test_parameter_count() {
     std::cout << "  Expected: " << expected << std::endl;
     assert(param_count == expected);
     
-    std::cout << "✓ Parameter count test passed" << std::endl;
+    std::cout << "  Parameter count test passed" << std::endl;
 }
 
 void test_module_structure() {
