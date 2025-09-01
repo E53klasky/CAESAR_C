@@ -1,7 +1,9 @@
 #include "blocks.h"
 #include <algorithm>
+#include <cctype>
+#include <stdexcept>
 
-// rember to make a file to test this when done
+// rember to make a file to TEST this when done
 //NOTE:  assuming kernel size is 1d 
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
         int64_t kernelSize, int64_t stride,
@@ -41,3 +43,115 @@ torch::nn::AnyModule norm(const std::string& norm_type, int64_t nc) {
         throw std::runtime_error("normalization layer [" + norm_type + "] is not found");
     }
 }
+
+torch::nn::AnyModule padding(const std::string& paddingType, int64_t padding){
+   if (padding == 0)
+       // same as none
+       return torch::nn::AnyModule();
+   std::string lowerPadType = paddingType;
+
+   std::transform(
+    lowerPadType.begin(),
+    lowerPadType.end(),
+    lowerPadType.begin(),
+    [](unsigned char c){ return std::tolower(c); }
+);
+
+   if(lowerPadType == "reflect"){
+      return torch::nn::AnyModule(torch::nn::ReflectionPad2d(
+                  torch::nn::ReflectionPad2dOptions(padding)));
+              }
+
+   else if(lowerPadType == "replicate"){
+   return torch::nn::AnyModule(torch::nn::ReflectionPad2d(
+            torch::nn::ReflectionPad2dOptions(padding)));
+           }
+   else{
+   throw std::runtime_error("padding layer [" + lowerPadType + "] is not implemented");
+   }
+}
+
+int64_t getValidPadding(int64_t kernelSize, int64_t dilation){
+    kernelSize = kernelSize + ( kernelSize -1) * (dilation -1);
+    int64_t padding = (kernelSize-1) / 2;
+    return padding;
+}
+
+
+torch::nn::AnyModule activation(
+    const std::string& act_type,
+    bool inplace,
+    double neg_slope,
+    int64_t n_prelu
+) {
+    std::string lowerAct = act_type;
+    std::transform(
+        lowerAct.begin(), lowerAct.end(), lowerAct.begin(),
+        [](unsigned char c){ return std::tolower(c); }
+    );
+
+    if (lowerAct == "relu") {
+        return torch::nn::AnyModule(
+            torch::nn::ReLU(torch::nn::ReLUOptions().inplace(inplace))
+        );
+    } 
+    else if (lowerAct == "lrelu") {
+        return torch::nn::AnyModule(
+            torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions()
+                .negative_slope(neg_slope)
+                .inplace(inplace))
+        );
+    } 
+    else if (lowerAct == "prelu") {
+        return torch::nn::AnyModule(
+            torch::nn::PReLU(torch::nn::PReLUOptions()
+                .num_parameters(n_prelu)
+                .init(neg_slope))
+        );
+    } 
+    else if (lowerAct == "gelu") {
+        return torch::nn::AnyModule(torch::nn::GELU());
+    } 
+    else {
+        throw std::runtime_error(
+            "activation layer [" + act_type + "] is not implemented"
+        );
+    }
+}
+
+//  on this one -> def conv_block  in CAESAR/CAESAR/models/BCRN/conv_block
+//
+
+ShortcutBlockImpl::ShortcutBlockImpl(torch::nn::AnyModule submodule) 
+    : sub(submodule) {
+
+    auto module_ptr = sub.ptr();
+    if (module_ptr) {
+        for (auto& param : module_ptr->named_parameters()) {
+            register_parameter(param.key(), param.value());
+        }
+        for (auto& buffer : module_ptr->named_buffers()) {
+            register_buffer(buffer.key(), buffer.value());
+        }
+    }
+}
+
+torch::Tensor ShortcutBlockImpl::forward(torch::Tensor x) {
+    return x + sub.forward(x);
+}
+
+torch::Tensor meanChannels(const torch::Tensor& F){
+    TORCH_CHECK(F.dim() == 4, "Expected 4D tensor (N,C,H,W)");
+    auto spatialSum = F.sum(3,true).sum(2,true);
+    return spatialSum/(F.size(2) * F.size(3));
+}
+
+torch::Tensor stdvChannels(const torch::Tensor& F){
+   TORCH_CHECK(F.dim() == 4, "Expected 4D tensor (N,C,H,W)");
+   auto FMean = meanChannels(F);
+   auto FVariance = (F-FMean).pow(2).sum(3, true).sum(2,true)/ (F.size(2) * F.size(3));
+   return FVariance;
+}
+
+
+
