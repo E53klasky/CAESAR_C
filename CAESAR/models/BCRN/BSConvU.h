@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+// NOTE: KernelSize is a tuple in python code but always treated like an int so idk 
 struct BSConvUImpl : public torch::nn::Module {
     torch::nn::Conv2d pw{nullptr};
     torch::nn::BatchNorm2d bn{nullptr};
