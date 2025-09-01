@@ -1,7 +1,7 @@
 # Build BCRN library
 add_library(BCRN
-    bcrnModel.cpp
-    bcrnModel.h
+   BSConvU.h
+  
     blocks.cpp
     blocks.h
     BSConvU.h
