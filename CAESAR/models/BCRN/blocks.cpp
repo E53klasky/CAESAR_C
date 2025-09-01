@@ -44,7 +44,7 @@ torch::nn::AnyModule norm(const std::string& norm_type, int64_t nc) {
     }
 }
 
-torch::nn::AnyModule padding(const std::string& paddingType, int64_t padding){
+torch::nn::AnyModule pad(const std::string& paddingType, int64_t padding){
    if (padding == 0)
        // same as none
        return torch::nn::AnyModule();
@@ -152,6 +152,58 @@ torch::Tensor stdvChannels(const torch::Tensor& F){
    auto FVariance = (F-FMean).pow(2).sum(3, true).sum(2,true)/ (F.size(2) * F.size(3));
    return FVariance;
 }
+
+// this is the clostest 1 to 1 that i can do btw pytorch and libtorch they are just different
+// should work for what i need only two cases
+ torch::nn::Sequential sequential(std::vector<torch::nn::AnyModule> args) {
+    torch::nn::Sequential seq;
+
+    for (auto& module : args) {
+        if (module.ptr() != nullptr) {  
+            seq->push_back(std::move(module));
+        }
+    }
+
+    return seq;
+}
+
+
+
+torch::nn::Sequential convBlock(int64_t inChannel, int64_t outChannel, int64_t kernelSize,
+        int64_t stride, int64_t dilation, int64_t groups, bool bias,
+        const std::string& paddingType, const std::string& normType, const std::string& actType){
+   
+  int64_t padding =  getValidPadding(kernelSize, dilation);
+   
+torch::nn::AnyModule p = torch::nn::AnyModule(); 
+if (!paddingType.empty() && paddingType != "zero") {
+    p = pad(paddingType, padding);
+}
+if (paddingType != "zero") {
+    padding = 0;
+}
+
+    auto conv_options = torch::nn::Conv2dOptions(inChannel, outChannel, kernelSize)
+        .stride(stride)
+        .padding(padding)
+        .dilation(dilation)
+        .groups(groups)
+        .bias(bias);
+   torch::nn::AnyModule c = torch::nn::AnyModule(torch::nn::Conv2d(conv_options));
+   std::string myActType = actType;
+   torch::nn::AnyModule a;
+    if (!actType.empty()) {
+        a = activation(myActType);
+    }
+
+    torch::nn::AnyModule n;
+    if (!normType.empty()) {
+        n = norm(normType, outChannel);
+    }
+    
+    return sequential({p, c, n, a});
+}
+
 
 
 
