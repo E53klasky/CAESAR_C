@@ -206,4 +206,55 @@ if (paddingType != "zero") {
 
 
 
+ESAImpl::ESAImpl(int64_t n_feats) {
+    int64_t f = n_feats / 4;
+
+    conv1 = torch::nn::Conv2d(torch::nn::Conv2dOptions(n_feats, f, 1));
+    conv_f = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 1));
+    conv_max = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
+    conv2 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).stride(2).padding(0));
+    conv3 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
+    conv3_ = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
+    conv4 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, n_feats, 1));
+
+    sigmoid = torch::nn::Sigmoid();
+    relu = torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true));
+
+
+    register_module("conv1", conv1);
+    register_module("conv_f", conv_f);
+    register_module("conv_max", conv_max);
+    register_module("conv2", conv2);
+    register_module("conv3", conv3);
+    register_module("conv3_", conv3_);
+    register_module("conv4", conv4);
+    register_module("sigmoid", sigmoid);
+    register_module("relu", relu);
+}
+
+torch::Tensor ESAImpl::forward(torch::Tensor x) {
+    auto c1_ = conv1->forward(x);
+    auto c1  = conv2->forward(c1_);
+    auto v_max = torch::max_pool2d(c1, 7, 3);
+
+    auto v_range = relu->forward(conv_max->forward(v_max));
+    auto c3 = relu->forward(conv3->forward(v_range));
+    c3 = conv3_->forward(c3);
+
+
+    c3 = torch::nn::functional::interpolate(
+        c3,
+        torch::nn::functional::InterpolateFuncOptions()
+            .size(std::vector<int64_t>({x.size(2), x.size(3)}))
+            .mode(torch::kBilinear)
+            .align_corners(false)
+    );
+
+    auto cf = conv_f->forward(c1_);
+    auto c4 = conv4->forward(c3 + cf);
+    auto m  = sigmoid->forward(c4);
+
+    return x * m;
+}
+
 

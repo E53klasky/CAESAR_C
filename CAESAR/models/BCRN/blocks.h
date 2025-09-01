@@ -53,4 +53,23 @@ torch::nn::Sequential sequential(std::vector<torch::nn::AnyModule> args);
 
 
 
+struct ESAImpl : torch::nn::Module {
+
+    torch::nn::Conv2d conv1{nullptr};
+    torch::nn::Conv2d conv_f{nullptr};
+    torch::nn::Conv2d conv_max{nullptr};
+    torch::nn::Conv2d conv2{nullptr};
+    torch::nn::Conv2d conv3{nullptr};
+    torch::nn::Conv2d conv3_{nullptr};
+    torch::nn::Conv2d conv4{nullptr};
+    torch::nn::Sigmoid sigmoid{nullptr};
+    torch::nn::ReLU relu{nullptr};
+
+ 
+    ESAImpl(int64_t n_feats);
+  
+    torch::Tensor forward(torch::Tensor x);
+};
+
+TORCH_MODULE(ESA);
 
