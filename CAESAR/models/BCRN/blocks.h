@@ -73,3 +73,95 @@ struct ESAImpl : torch::nn::Module {
 
 TORCH_MODULE(ESA);
 
+
+
+struct PixelShuffleBlockImpl : torch::nn::Module {
+    BSConvU conv{nullptr};                   
+    torch::nn::PixelShuffle pixel_shuffle{nullptr};
+
+
+    PixelShuffleBlockImpl(int64_t in_channels, int64_t out_channels,
+                          int64_t upscale_factor = 2,
+                          int64_t kernel_size = 3, int64_t stride = 1);
+
+        torch::Tensor forward(torch::Tensor x);
+};
+
+TORCH_MODULE(PixelShuffleBlock);
+
+
+inline torch::nn::Conv2d conv_layer(int64_t inChannels, int64_t outChannels, int64_t kernelSize,
+                                    int64_t stride = 1, int64_t padding = 0, int64_t groups = 1) {
+    return torch::nn::Conv2d(torch::nn::Conv2dOptions(inChannels, outChannels, kernelSize)
+                                 .stride(stride)
+                                 .padding(padding)
+                                 .groups(groups)
+                                 .bias(true));
+}
+
+
+struct BlocksImpl : torch::nn::Module {
+    torch::nn::Conv2d c1_d_3{nullptr}, c1_r_1{nullptr}, c1_r_2{nullptr};
+    torch::nn::AnyModule act; 
+
+    BlocksImpl(int64_t dim, int64_t kernelSize = 3) {
+        c1_d_3 = conv_layer(dim, dim, kernelSize, 1, 0, dim); 
+        c1_r_1 = conv_layer(dim, dim * 4, 1);
+        c1_r_2 = conv_layer(dim * 4, dim, 1);
+       std::string actName = "gelu";
+        act = activation(actName); 
+
+        register_module("c1_d_3", c1_d_3);
+        register_module("c1_r_1", c1_r_1);
+        register_module("c1_r_2", c1_r_2);
+    }
+
+    torch::Tensor forward(torch::Tensor x) {
+        auto shortcut = x.clone();  
+        x = c1_d_3->forward(x);
+        x = c1_r_1->forward(x);
+        x = act.forward(x);        
+        x = c1_r_2->forward(x);
+        x = x + shortcut;         
+        return x;
+    }
+};
+
+TORCH_MODULE(Blocks);
+
+
+struct CALayerImpl : torch::nn::Module {
+    torch::nn::AdaptiveAvgPool2d avgPool{nullptr};
+    torch::nn::Sequential convDu{nullptr};
+
+    CALayerImpl(int64_t numFeats, int64_t reduction = 8) {
+     
+        avgPool = torch::nn::AdaptiveAvgPool2d(torch::nn::AdaptiveAvgPool2dOptions({1,1}));
+
+    
+        convDu = torch::nn::Sequential(
+            torch::nn::Conv2d(torch::nn::Conv2dOptions(numFeats, numFeats / reduction, 1)
+                              .stride(1)
+                              .padding(0)
+                              .bias(true)),
+            torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true)),
+            torch::nn::Conv2d(torch::nn::Conv2dOptions(numFeats / reduction, numFeats, 1)
+                              .stride(1)
+                              .padding(0)
+                              .bias(true)),
+            torch::nn::Sigmoid()
+        );
+
+        register_module("avgPool", avgPool);
+        register_module("convDu", convDu);
+    }
+
+    torch::Tensor forward(torch::Tensor x) {
+        auto y = avgPool->forward(x);
+        y = convDu->forward(y);
+        return x * y; 
+    }
+};
+
+TORCH_MODULE(CALayer);
+
