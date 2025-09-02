@@ -9,10 +9,12 @@
 #include <stdexcept>
 #include "BSConvU.h"
 
+
+// TODO:  test block.h and blocks.cpp ----------------------------------
 // note KernlSize is assumed to be an int64_t not a kernel
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
-        int64_t kernelSize, int64_t stride = 1,
-        int64_t dilation = 1, int64_t groups = 1);
+                            int64_t kernelSize, int64_t stride = 1,
+                            int64_t dilation = 1, int64_t groups = 1);
 
 BSConvU bluePrintConvLayer(int64_t inChannels, int64_t outChannels,
         int64_t kernelSize, int64_t stride = 1,
@@ -164,4 +166,62 @@ struct CALayerImpl : torch::nn::Module {
 };
 
 TORCH_MODULE(CALayer);
+
+
+struct saLayerImpl : torch::nn::Module {
+    int64_t groups;
+    torch::nn::AdaptiveAvgPool2d avgPool{nullptr};
+    torch::Tensor cweight, cbias, sweight, sbias;
+    torch::nn::Sigmoid sigmoid{nullptr};
+    
+    torch::nn::GroupNorm gn{nullptr};
+
+    saLayerImpl(int64_t numFeats, int64_t groups = 6);
+
+    torch::Tensor forward(torch::Tensor x);
+    static torch::Tensor channelShuffle(torch::Tensor x, int64_t groups);
+};
+
+TORCH_MODULE(saLayer);
+
+
+struct CCALayerImpl : torch::nn::Module{
+
+    torch::nn::AdaptiveAvgPool2d avgPool{nullptr};
+    torch::nn::Sequential convDu;
+    int64_t channel;
+    int64_t reduction;
+
+    CCALayerImpl(int64_t channel_, int64_t reduction_ = 16) :
+        channel(channel_), reduction(reduction_) {
+
+        avgPool = torch::nn::AdaptiveAvgPool2d(
+    torch::nn::AdaptiveAvgPool2dOptions({1, 1}));
+
+        convDu = torch::nn::Sequential( 
+                BSConvU(channel,channel / reduction, 1, 0, true),
+                torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true)),
+                BSConvU(channel/ reduction, channel, 1, 0, true),
+                torch::nn::Sigmoid()
+                );
+
+        register_module("avgPool", avgPool);
+        register_module("convDu", convDu);
+     }
+
+        torch::Tensor forward(torch::Tensor x){
+            auto y = avgPool->forward(x);
+            y = convDu->forward(y);
+            return x*y;
+
+        }
+
+ };
+
+TORCH_MODULE(CCALayer);
+
+
+
+
+
 

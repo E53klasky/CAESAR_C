@@ -3,22 +3,25 @@
 #include <cctype>
 #include <stdexcept>
 
-// rember to make a file to TEST this when done
+
+// NOTE: I am using int64_t instead of int becuase I do not know how large these numbers get
+// I am just trying to be safe for right now ------------ can be changed later
+// TODO: test block.cpp and blocks.h ----------------------------------------------------
 //NOTE:  assuming kernel size is 1d  ---------------------------------------
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
-        int64_t kernelSize, int64_t stride,
-        int64_t dilation, int64_t groups) {
-
-    int64_t padding = (kernelSize - 1) / 2 * dilation;
-  return torch::nn::Conv2d(torch::nn::Conv2dOptions(inChannels, outChannels, kernelSize)
-    .stride(stride)
-    .padding(padding)
-    .bias(true)
-    .dilation(dilation)
-    .groups(groups));  
+                            int64_t kernelSize, int64_t stride,
+                            int64_t dilation, int64_t groups) {
   
-}
+    int64_t padding = ((kernelSize - 1) / 2) * dilation;
 
+    return torch::nn::Conv2d(
+        torch::nn::Conv2dOptions(inChannels, outChannels, kernelSize)
+            .stride(stride)
+            .padding(padding)
+            .bias(true)
+            .dilation(dilation)
+            .groups(groups));
+}
 
 BSConvU bluePrintConvLayer(int64_t inChannels, int64_t outChannels,
         int64_t kernelSize, int64_t stride, int64_t dilation) {
@@ -281,6 +284,67 @@ torch::Tensor PixelShuffleBlockImpl::forward(torch::Tensor x) {
     x = conv->forward(x);      
     x = pixel_shuffle->forward(x); 
     return x;
+}
+
+saLayerImpl::saLayerImpl(int64_t numFeats, int64_t groups) : groups(groups){
+
+    avgPool = torch::nn::AdaptiveAvgPool2d(torch::nn::AdaptiveAvgPool2dOptions(1));
+
+        cweight = register_parameter("cweight", torch::zeros({1, numFeats / (2 * groups), 1, 1}));
+    cbias   = register_parameter("cbias",   torch::ones({1, numFeats / (2 * groups), 1, 1}));
+    sweight = register_parameter("sweight", torch::zeros({1, numFeats / (2 * groups), 1, 1}));
+    sbias   = register_parameter("sbias",   torch::ones({1, numFeats / (2 * groups), 1, 1}));
+
+    sigmoid = torch::nn::Sigmoid();
+
+    gn = torch::nn::GroupNorm(torch::nn::GroupNormOptions(numFeats / (2*groups), numFeats/(2*groups)));
+
+    register_module("avgPool", avgPool);
+    register_module("sigmoid", sigmoid);
+    register_module("gn", gn);
+
+}
+
+   torch::Tensor channelShuffle(torch::Tensor x, int64_t groups){
+       auto sizes = x.sizes();
+       int64_t b = sizes[0];
+       int64_t c = sizes[1];
+       int64_t h = sizes[2];
+       int64_t w = sizes[3];
+
+       x = x.reshape({b, groups, -1, h, w});
+       x = x.permute({0, 2, 1, 3, 4});
+       x = x.reshape({b, -1, h, w});
+
+       return x;
+   }
+
+
+torch::Tensor saLayerImpl::forward(torch::Tensor x){
+    auto sizes = x.sizes();
+    int64_t b = sizes[0];
+    int64_t c = sizes[1];
+    int64_t h = sizes[2];
+    int64_t w = sizes[3];
+
+
+    x = x.reshape({b*groups, -1, h, w});
+    auto chunks = x.chunk(2,1);
+    auto x0 = chunks[0];
+    auto x1 = chunks[1];
+
+    auto xn = avgPool->forward(x0);
+    xn = cweight * xn + cbias;
+    xn = x0 * sigmoid->forward(xn);
+
+    auto xs = gn->forward(x1);
+    xs = sweight *xs +sbias;
+    xs = x1 *sigmoid->forward(xs);
+
+    auto out = torch::cat({xn, xs}, 1);
+
+    out = channelShuffle(out, 2);
+    return out;
 }
 
 
