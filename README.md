@@ -10,14 +10,15 @@ This repository contains my work on converting **CAESAR** to C code using Libtor
 
 '''bash
 
-mkdir build && cd bui.ld
+mkdir build && cd build
 
 cmake -DCMAKE_PREFIX_PATH=/path/to/libtorch ..
 
 make
 
 
-./download_modles.sh
+
+../download_modles.sh
 
 
 ---
