@@ -257,4 +257,30 @@ torch::Tensor ESAImpl::forward(torch::Tensor x) {
     return x * m;
 }
 
+PixelShuffleBlockImpl::PixelShuffleBlockImpl(
+    int64_t in_channels, int64_t out_channels,
+    int64_t upscale_factor, int64_t kernel_size, int64_t stride)
+{
+
+    conv = register_module(
+        "conv",
+        bluePrintConvLayer(in_channels,
+                           out_channels * upscale_factor * upscale_factor,
+                           kernel_size, stride, 1) 
+    );
+
+    
+    pixel_shuffle = register_module(
+        "pixel_shuffle",
+        torch::nn::PixelShuffle(torch::nn::PixelShuffleOptions(upscale_factor))
+    );
+}
+
+
+torch::Tensor PixelShuffleBlockImpl::forward(torch::Tensor x) {
+    x = conv->forward(x);      
+    x = pixel_shuffle->forward(x); 
+    return x;
+}
+
 
