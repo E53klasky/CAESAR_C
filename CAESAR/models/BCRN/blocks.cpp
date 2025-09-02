@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 // rember to make a file to TEST this when done
-//NOTE:  assuming kernel size is 1d 
+//NOTE:  assuming kernel size is 1d  ---------------------------------------
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
         int64_t kernelSize, int64_t stride,
         int64_t dilation, int64_t groups) {

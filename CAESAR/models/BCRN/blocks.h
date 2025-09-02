@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include "BSConvU.h"
 
-
+// note KernlSize is assumed to be an int64_t not a kernel
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
         int64_t kernelSize, int64_t stride = 1,
         int64_t dilation = 1, int64_t groups = 1);
