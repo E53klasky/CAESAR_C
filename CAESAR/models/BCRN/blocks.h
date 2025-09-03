@@ -53,19 +53,18 @@ torch::Tensor stdvChannels(const torch::Tensor& F);
 torch::nn::Sequential sequential(std::vector<torch::nn::AnyModule> args);
 
 
-
+// defeined wrong???????????????????-
 struct ESAImpl : torch::nn::Module {
 
-    torch::nn::Conv2d conv1{nullptr};
-    torch::nn::Conv2d conv_f{nullptr};
-    torch::nn::Conv2d conv_max{nullptr};
-    torch::nn::Conv2d conv2{nullptr};
-    torch::nn::Conv2d conv3{nullptr};
-    torch::nn::Conv2d conv3_{nullptr};
-    torch::nn::Conv2d conv4{nullptr};
-    torch::nn::Sigmoid sigmoid{nullptr};
+BSConvU conv1{nullptr};
+BSConvU conv_f{nullptr};
+BSConvU conv_max{nullptr};
+BSConvU conv2{nullptr};
+BSConvU conv3{nullptr};
+BSConvU conv3_{nullptr};
+BSConvU conv4{nullptr};
+   torch::nn::Sigmoid sigmoid{nullptr};
     torch::nn::ReLU relu{nullptr};
-
  
     ESAImpl(int64_t n_feats);
   

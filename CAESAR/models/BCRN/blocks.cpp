@@ -207,43 +207,41 @@ if (!paddingType.empty() && paddingType != "zero") {
 }
 
 
-
+// defined wrong  something with FOWARD???----------------------------------------------------------------------------------------
 ESAImpl::ESAImpl(int64_t n_feats) {
     int64_t f = n_feats / 4;
 
-    conv1 = torch::nn::Conv2d(torch::nn::Conv2dOptions(n_feats, f, 1));
-    conv_f = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 1));
-    conv_max = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
-    conv2 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).stride(2).padding(0));
-    conv3 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
-    conv3_ = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, f, 3).padding(1));
-    conv4 = torch::nn::Conv2d(torch::nn::Conv2dOptions(f, n_feats, 1));
+    conv1   = register_module("conv1",   BSConvU(n_feats, f, 1));
+    conv_f  = register_module("conv_f",  BSConvU(f, f, 1));
+    conv_max= register_module("conv_max",BSConvU(f, f, 3, 1, 1));
+    conv2   = register_module("conv2",   BSConvU(f, f, 3, 2, 0));
+    conv3   = register_module("conv3",   BSConvU(f, f, 3, 1, 1));
+    conv3_  = register_module("conv3_",  BSConvU(f, f, 3, 1, 1));
+    conv4   = register_module("conv4",   BSConvU(f, n_feats, 1));
 
-    sigmoid = torch::nn::Sigmoid();
-    relu = torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true));
+    sigmoid = register_module("sigmoid", torch::nn::Sigmoid());
+    relu    = register_module("relu", torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true)));
 
-
-    register_module("conv1", conv1);
-    register_module("conv_f", conv_f);
-    register_module("conv_max", conv_max);
-    register_module("conv2", conv2);
-    register_module("conv3", conv3);
-    register_module("conv3_", conv3_);
-    register_module("conv4", conv4);
-    register_module("sigmoid", sigmoid);
-    register_module("relu", relu);
 }
 
 torch::Tensor ESAImpl::forward(torch::Tensor x) {
+    std::cout<<"debug"<<std::endl;
+    std::cout<<"x size start"<<x.sizes()<<std::endl;
     auto c1_ = conv1->forward(x);
+    std::cout<<"after first foward c1_ = "<<c1_.sizes()<<std::endl;
     auto c1  = conv2->forward(c1_);
+    std::cout<<"after second foward c1 = "<<c1.sizes()<<std::endl;
     auto v_max = torch::max_pool2d(c1, 7, 3);
+    std::cout<<"after third foward v_max = "<<v_max.sizes()<<std::endl;
 
     auto v_range = relu->forward(conv_max->forward(v_max));
+    std::cout<<"after forth foward v_range = "<<v_range.sizes()<<std::endl;
     auto c3 = relu->forward(conv3->forward(v_range));
+    std::cout<<"after fith foward c3 = "<<c3.sizes()<<std::endl;
     c3 = conv3_->forward(c3);
+    std::cout<<"after 6th foward c3 = "<<c3.sizes()<<std::endl;
 
-
+    std::cout<<"starting interpolate"<<std::endl;
     c3 = torch::nn::functional::interpolate(
         c3,
         torch::nn::functional::InterpolateFuncOptions()
@@ -251,10 +249,24 @@ torch::Tensor ESAImpl::forward(torch::Tensor x) {
             .mode(torch::kBilinear)
             .align_corners(false)
     );
-
+    std::cout<<"Done interpolate"<<std::endl;
     auto cf = conv_f->forward(c1_);
+    std::cout<<"cf = "<<cf.sizes()<<std::endl;
     auto c4 = conv4->forward(c3 + cf);
+    std::cout<<"c4 = "<<c4.sizes()<<std::endl;
     auto m  = sigmoid->forward(c4);
+    std::cout<<"m = "<<m.sizes()<<std::endl;
+    std::cout<<"end with foward"<<std::endl;
+    std::cout<<"end of forward"<<std::endl;
+std::cout << "x: " << x.sizes() << std::endl;
+std::cout << "c1_: " << c1_.sizes() << std::endl;
+std::cout << "c1: " << c1.sizes() << std::endl;
+std::cout << "v_max: " << v_max.sizes() << std::endl;
+std::cout << "v_range: " << v_range.sizes() << std::endl;
+std::cout << "c3: " << c3.sizes() << std::endl;
+std::cout << "cf: " << cf.sizes() << std::endl;
+
+
 
     return x * m;
 }
