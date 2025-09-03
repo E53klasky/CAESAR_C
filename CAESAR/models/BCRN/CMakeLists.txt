@@ -1,10 +1,7 @@
 # Build BCRN library
 add_library(BCRN
-   BSConvU.h
-  
     blocks.cpp
-    blocks.h
-    BSConvU.h
+    # Remove BSConvU.h from sources - it's a header file
 )
 
 # Include current dir headers
@@ -17,9 +14,8 @@ target_link_libraries(BCRN
     PUBLIC "${TORCH_LIBRARIES}"
 )
 
-# Optionally link to caesar_lib or compressModules3dMidSR if BCRN depends on them
+# Link dependencies
 target_link_libraries(BCRN
     PUBLIC caesar_lib
-    PUBLIC compressModules3dMidSR
 )
-
+# Note: Removed compressModules3dMidSR dependency to avoid circular deps

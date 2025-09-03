@@ -26,10 +26,9 @@ torch::nn::AnyModule  pad(const std::string& padType, int64_t padding);
 
 int64_t getValidPadding(int64_t kernelSize, int64_t dilation);
 
-
-torch::nn::AnyModule activation(std::string& actType, bool inplace = true,
+torch::nn::AnyModule activation(const std::string& actType, bool inplace = true,
         double negSlope = 0.05,
-        int64_t nPrelu =1);
+        int64_t nPrelu = 1);
 
 
 
