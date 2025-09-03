@@ -23,7 +23,7 @@ make
 
 ---
 
-Trouble shooting I added cuda to this but I am pretty sure there is no need for it in so you can kust comment it out
+Trouble shooting I added cuda to this but I am pretty sure there is no need for it in so you can comment it out
 
 
 ---

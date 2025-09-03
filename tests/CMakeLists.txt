@@ -35,6 +35,17 @@ target_link_libraries(test_blocks
         stdc++fs
 )
 
+# Test: BCRN Model
+add_executable(test_bcrn
+    testBcrn.cpp
+)
+target_link_libraries(test_bcrn
+    PRIVATE
+        BCRN
+        "${TORCH_LIBRARIES}"
+        stdc++fs
+)
+
 # Handle DLL copying on Windows (keep as is)
 if (MSVC)
   file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
