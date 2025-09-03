@@ -10,7 +10,7 @@
 #include "BSConvU.h"
 
 
-// TODO:  test block.h and blocks.cpp ----------------------------------
+
 // note KernlSize is assumed to be an int64_t not a kernel
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
                             int64_t kernelSize, int64_t stride = 1,
