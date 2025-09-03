@@ -9,4 +9,4 @@ find_package(Torch REQUIRED)
 
 add_subdirectory(CAESAR)
 add_subdirectory(tests)
-add_subdirectory(CAESAR/models/BCRN)
+

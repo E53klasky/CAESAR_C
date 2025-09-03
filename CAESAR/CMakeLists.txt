@@ -17,6 +17,6 @@ target_link_libraries(caesar_lib
         "${TORCH_LIBRARIES}"
 )
 
-# Add the subdir for pretrained model reader (in case later we separate it)
+# Add subdirectories
 add_subdirectory(pretrainedModelIO)
-
+add_subdirectory(models)  
