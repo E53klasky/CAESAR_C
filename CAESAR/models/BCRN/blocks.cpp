@@ -6,7 +6,6 @@
 
 // NOTE: I am using int64_t instead of int becuase I do not know how large these numbers get
 // I am just trying to be safe for right now ------------ can be changed later
-// TODO: test block.cpp and blocks.h ----------------------------------------------------
 //NOTE:  assuming kernel size is 1d  ---------------------------------------
 torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
                             int64_t kernelSize, int64_t stride,

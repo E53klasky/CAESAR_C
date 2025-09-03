@@ -1,7 +1,7 @@
 # Build BCRN library
 add_library(BCRN
     blocks.cpp
-    # Remove BSConvU.h from sources - it's a header file
+   bcrnModel.cpp
 )
 
 # Include current dir headers
