@@ -64,11 +64,10 @@ torch::nn::AnyModule pad(const std::string& paddingType, int64_t padding){
       return torch::nn::AnyModule(torch::nn::ReflectionPad2d(
                   torch::nn::ReflectionPad2dOptions(padding)));
               }
-
-   else if(lowerPadType == "replicate"){
-   return torch::nn::AnyModule(torch::nn::ReflectionPad2d(
-            torch::nn::ReflectionPad2dOptions(padding)));
-           }
+else if (lowerPadType == "replicate") {
+    return torch::nn::AnyModule(torch::nn::ReplicationPad2d(
+        torch::nn::ReplicationPad2dOptions(padding)));
+}
    else{
    throw std::runtime_error("padding layer [" + lowerPadType + "] is not implemented");
    }
@@ -153,7 +152,7 @@ torch::Tensor stdvChannels(const torch::Tensor& F){
    TORCH_CHECK(F.dim() == 4, "Expected 4D tensor (N,C,H,W)");
    auto FMean = meanChannels(F);
    auto FVariance = (F-FMean).pow(2).sum(3, true).sum(2,true)/ (F.size(2) * F.size(3));
-   return FVariance;
+   return torch::sqrt(FVariance); // should i addd 1e-6 for sqrt(0) ??????
 }
 
 // this is the clostest 1 to 1 that i can do btw pytorch and libtorch they are just different
@@ -162,7 +161,7 @@ torch::Tensor stdvChannels(const torch::Tensor& F){
     torch::nn::Sequential seq;
 
     for (auto& module : args) {
-        if (module.ptr() != nullptr) {  
+        if (!module.is_empty()) {  
             seq->push_back(std::move(module));
         }
     }
@@ -182,7 +181,8 @@ torch::nn::AnyModule p = torch::nn::AnyModule();
 if (!paddingType.empty() && paddingType != "zero") {
     p = pad(paddingType, padding);
 }
-if (paddingType != "zero") {
+
+if (!paddingType.empty() && paddingType != "zero") {
     padding = 0;
 }
 
@@ -305,7 +305,7 @@ saLayerImpl::saLayerImpl(int64_t numFeats, int64_t groups) : groups(groups){
 
 }
 
-   torch::Tensor channelShuffle(torch::Tensor x, int64_t groups){
+   torch::Tensor saLayerImpl::channelShuffle(torch::Tensor x, int64_t groups){
        auto sizes = x.sizes();
        int64_t b = sizes[0];
        int64_t c = sizes[1];
