@@ -13,13 +13,6 @@ torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
   
     int64_t padding = ((kernelSize - 1) / 2) * dilation;
 
-    std::cout << "conv_layer called with:" << std::endl;
-    std::cout << "  inChannels=" << inChannels << ", outChannels=" << outChannels << std::endl;
-    std::cout << "  kernelSize=" << kernelSize << ", stride=" << stride << std::endl;
-    std::cout << "  dilation=" << dilation << ", groups=" << groups << std::endl;
-    std::cout << "  calculated padding=" << padding << std::endl;
-    
-
     return torch::nn::Conv2d(
         torch::nn::Conv2dOptions(inChannels, outChannels, kernelSize)
             .stride(stride)
@@ -231,23 +224,14 @@ conv_f  = register_module("conv_f",  BSConvU(f, f, 1));
 }
 
 torch::Tensor ESAImpl::forward(torch::Tensor x) {
-    std::cout<<"debug"<<std::endl;
-    std::cout<<"x size start"<<x.sizes()<<std::endl;
+
     auto c1_ = conv1->forward(x);
-    std::cout<<"after first foward c1_ = "<<c1_.sizes()<<std::endl;
     auto c1  = conv2->forward(c1_);
-    std::cout<<"after second foward c1 = "<<c1.sizes()<<std::endl;
     auto v_max = torch::max_pool2d(c1, 7, 3);
-    std::cout<<"after third foward v_max = "<<v_max.sizes()<<std::endl;
-
     auto v_range = relu->forward(conv_max->forward(v_max));
-    std::cout<<"after forth foward v_range = "<<v_range.sizes()<<std::endl;
     auto c3 = relu->forward(conv3->forward(v_range));
-    std::cout<<"after fith foward c3 = "<<c3.sizes()<<std::endl;
-    c3 = conv3_->forward(c3);
-    std::cout<<"after 6th foward c3 = "<<c3.sizes()<<std::endl;
 
-    std::cout<<"starting interpolate"<<std::endl;
+    c3 = conv3_->forward(c3);
     c3 = torch::nn::functional::interpolate(
         c3,
         torch::nn::functional::InterpolateFuncOptions()
@@ -255,24 +239,10 @@ torch::Tensor ESAImpl::forward(torch::Tensor x) {
             .mode(torch::kBilinear)
             .align_corners(false)
     );
-    std::cout<<"Done interpolate"<<std::endl;
+
     auto cf = conv_f->forward(c1_);
-    std::cout<<"cf = "<<cf.sizes()<<std::endl;
     auto c4 = conv4->forward(c3 + cf);
-    std::cout<<"c4 = "<<c4.sizes()<<std::endl;
     auto m  = sigmoid->forward(c4);
-    std::cout<<"m = "<<m.sizes()<<std::endl;
-    std::cout<<"end with foward"<<std::endl;
-    std::cout<<"end of forward"<<std::endl;
-std::cout << "x: " << x.sizes() << std::endl;
-std::cout << "c1_: " << c1_.sizes() << std::endl;
-std::cout << "c1: " << c1.sizes() << std::endl;
-std::cout << "v_max: " << v_max.sizes() << std::endl;
-std::cout << "v_range: " << v_range.sizes() << std::endl;
-std::cout << "c3: " << c3.sizes() << std::endl;
-std::cout << "cf: " << cf.sizes() << std::endl;
-
-
 
     return x * m;
 }

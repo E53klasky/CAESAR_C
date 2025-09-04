@@ -104,20 +104,10 @@ struct BlocksImpl : torch::nn::Module {
     torch::nn::AnyModule act; 
 
     BlocksImpl(int64_t dim, int64_t kernelSize = 3) {
-        std::cout << "Blocks constructor: dim=" << dim << ", kernelSize=" << kernelSize << std::endl;
-        
-        // Fix: Calculate proper padding for the depthwise conv to maintain spatial dimensions
-        int64_t padding = (kernelSize - 1) / 2;  // For kernel=3, padding=1
-        
-        std::cout << "Creating c1_d_3..." << std::endl;
-        c1_d_3 = conv_layer(dim, dim, kernelSize, 1, padding, dim);  // ✅ Now padding=1
-        
-        std::cout << "Creating c1_r_1..." << std::endl;
-        std::cout << "c1_r_1: " << dim << "->" << dim * 4 << ", kernel=1, should have padding=0" << std::endl;
+
+        int64_t padding = (kernelSize - 1) / 2; 
+        c1_d_3 = conv_layer(dim, dim, kernelSize, 1, padding, dim); 
         c1_r_1 = conv_layer(dim, dim * 4, 1);
-        
-        std::cout << "Creating c1_r_2..." << std::endl;
-        std::cout << "c1_r_2: " << dim * 4 << "->" << dim << ", kernel=1, should have padding=0" << std::endl;
         c1_r_2 = conv_layer(dim * 4, dim, 1);
         
         std::string actName = "gelu";
@@ -129,35 +119,13 @@ struct BlocksImpl : torch::nn::Module {
     }
 
     torch::Tensor forward(torch::Tensor x) {
-        std::cout << "=== Blocks forward start ===" << std::endl;
-        std::cout << "Input to Blocks: " << x.sizes() << std::endl;
         
         auto shortcut = x.clone();
-        std::cout << "Shortcut saved: " << shortcut.sizes() << std::endl;
-        
-        std::cout << "Starting c1_d_3..." << std::endl;
         x = c1_d_3->forward(x);
-        std::cout << "After c1_d_3: " << x.sizes() << std::endl;
-        
-        std::cout << "Starting c1_r_1..." << std::endl;
         x = c1_r_1->forward(x);
-        std::cout << "After c1_r_1: " << x.sizes() << std::endl;
-        
-        std::cout << "Starting act..." << std::endl;
         x = act.forward(x);        
-        std::cout << "After act: " << x.sizes() << std::endl;
-        
-        std::cout << "Starting c1_r_2..." << std::endl;
         x = c1_r_2->forward(x);
-        std::cout << "After c1_r_2: " << x.sizes() << std::endl;
-        
-        std::cout << "Before addition - shortcut: " << shortcut.sizes() << ", x: " << x.sizes() << std::endl;
-        
-        // This should now work since both tensors should be the same size
         x = x + shortcut;
-        
-        std::cout << "After addition: " << x.sizes() << std::endl;
-        std::cout << "=== Blocks forward end ===" << std::endl;
         return x;
     }
 };
@@ -195,10 +163,10 @@ struct CCALayerImpl : torch::nn::Module{
             torch::nn::AdaptiveAvgPool2dOptions({1, 1}));
 
         convDu = torch::nn::Sequential( 
-            // Fix: Use proper parameter order - stride=1, padding=0
-            BSConvU(channel, channel / reduction, 1, 1, 0, 1, true),  // ✅ stride=1
+// review logic
+            BSConvU(channel, channel / reduction, 1, 1, 0, 1, true),  
             torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true)),
-            BSConvU(channel / reduction, channel, 1, 1, 0, 1, true),  // ✅ stride=1
+            BSConvU(channel / reduction, channel, 1, 1, 0, 1, true), 
             torch::nn::Sigmoid()
         );
 
