@@ -13,6 +13,13 @@ torch::nn::Conv2d convLayer(int64_t inChannels, int64_t outChannels,
   
     int64_t padding = ((kernelSize - 1) / 2) * dilation;
 
+    std::cout << "conv_layer called with:" << std::endl;
+    std::cout << "  inChannels=" << inChannels << ", outChannels=" << outChannels << std::endl;
+    std::cout << "  kernelSize=" << kernelSize << ", stride=" << stride << std::endl;
+    std::cout << "  dilation=" << dilation << ", groups=" << groups << std::endl;
+    std::cout << "  calculated padding=" << padding << std::endl;
+    
+
     return torch::nn::Conv2d(
         torch::nn::Conv2dOptions(inChannels, outChannels, kernelSize)
             .stride(stride)
@@ -207,19 +214,18 @@ if (!paddingType.empty() && paddingType != "zero") {
 }
 
 
-// defined wrong  something with FOWARD???----------------------------------------------------------------------------------------
-ESAImpl::ESAImpl(int64_t n_feats) {
-    int64_t f = n_feats / 4;
 
+ESAImpl::ESAImpl(int64_t n_feats) {
+
+    int64_t f = n_feats / 4;
     conv1   = register_module("conv1",   BSConvU(n_feats, f, 1));
-    conv_f  = register_module("conv_f",  BSConvU(f, f, 1));
+conv_f  = register_module("conv_f",  BSConvU(f, f, 1));
     conv_max= register_module("conv_max",BSConvU(f, f, 3, 1, 1));
     conv2   = register_module("conv2",   BSConvU(f, f, 3, 2, 0));
     conv3   = register_module("conv3",   BSConvU(f, f, 3, 1, 1));
     conv3_  = register_module("conv3_",  BSConvU(f, f, 3, 1, 1));
     conv4   = register_module("conv4",   BSConvU(f, n_feats, 1));
-
-    sigmoid = register_module("sigmoid", torch::nn::Sigmoid());
+   sigmoid = register_module("sigmoid", torch::nn::Sigmoid());
     relu    = register_module("relu", torch::nn::ReLU(torch::nn::ReLUOptions().inplace(true)));
 
 }
