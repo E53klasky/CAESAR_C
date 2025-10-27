@@ -1,19 +1,13 @@
-import os
-import sys
-import numpy as np
-import matplotlib.pyplot as plt
-import torch
-from torch.utils.data import Dataset, TensorDataset, DataLoader
-
-from pyCAESAR.models.network_components import ResnetBlock, FlexiblePrior, Downsample, Upsample
-from pyCAESAR.models.utils import quantize, NormalDistribution
+import torch.nn as nn
+from .network_components import ResnetBlock, FlexiblePrior, Downsample, Upsample
+from .utils import quantize, NormalDistribution
 import time
 import yaml
-from pyCAESAR.models.BCRN.bcrn_model import BluePrintConvNeXt_SR
-import torch.nn as nn
+from .BCRN.bcrn_model import BluePrintConvNeXt_SR
+import torch
 import torch.nn.init as init
-from pyCAESAR.models.RangeEncoding import RangeCoder
-from collections import OrderedDict
+from .RangeEncoding import RangeCoder
+
 
 def load_yaml(file_path):
     with open(file_path, 'r') as file:
@@ -42,6 +36,8 @@ def reshape_batch_3d_2d(batch_data):
     B,C,T,H,W = batch_data.shape
     batch_data = batch_data.permute([0,2,1,3,4]).reshape([B*T,C,H,W])
     return batch_data
+
+
 
 class Compressor(nn.Module):
     def __init__(
@@ -108,7 +104,12 @@ class Compressor(nn.Module):
         latent = x
         return latent
     
+        
+    
     def hyper_encode(self, x):
+        
+        
+            
         
         for i, (conv, act) in enumerate(self.hyper_enc):
             x = conv(x)
@@ -117,6 +118,7 @@ class Compressor(nn.Module):
         hyper_latent = x
         return hyper_latent
     
+    
     def hyper_decode(self, x): 
         
         for i, (deconv, act) in enumerate(self.hyper_dec):
@@ -124,6 +126,7 @@ class Compressor(nn.Module):
             x = act(x)
 
         mean, scale = x.chunk(2, 1)
+        
         return mean, scale
     
     
@@ -144,20 +147,55 @@ class Compressor(nn.Module):
             x = up(x)
         
         return x
-
-    def compress_for_cpp(self, x):
-        
+    
+    
+    def compress(self, x, return_latent = False, real = False, return_time = False):
+        if self.range_coder is None:
+            _quantized_cdf, _cdf_length, _offset = self.prior._update(30)
+            self.range_coder = RangeCoder(_quantized_cdf = _quantized_cdf, _cdf_length= _cdf_length, _offset= _offset, medians = self.prior.medians.detach())
+            
         B,C,T,H,W = x.shape
         original_shape = x.shape
         
+        if return_time:
+            torch.cuda.synchronize()  # Wait for all GPU ops to finish
+            start_time = time.time()
+
         latent = self.encode(x)
         hyper_latent = self.hyper_encode(latent)
-        q_hyper_latent, hyper_indexes = self.range_coder.compress_hyperlatent_return_para(hyper_latent)
+        q_hyper_latent = quantize(hyper_latent, "dequantize", self.prior.medians)
+        mean, scale = self.hyper_decode(q_hyper_latent)
+
+        if return_time:
+            torch.cuda.synchronize()  # Wait for all GPU ops to finish
+            elapsed_time = time.time() - start_time
         
-        mean, scale = self.hyper_decode(q_hyper_latent.float())
-        q_latent, latent_indexes = self.range_coder.compress_return_para(latent, mean, scale)
+        latent_string = self.range_coder.compress(latent, mean, scale)
+        hyper_latent_string = self.range_coder.compress_hyperlatent(hyper_latent)
         
-        return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        bpf_real = torch.Tensor([(len(lc)+len(hc))*8 for lc, hc in zip(latent_string, hyper_latent_string)])
+        
+        compressed_data = (latent_string, hyper_latent_string, original_shape, hyper_latent.shape)
+
+        state4bpp = {"latent": latent, "hyper_latent": hyper_latent, "mean":mean, "scale": scale}
+        
+        bpf_theory, bpp = self.bpp(original_shape, state4bpp)
+        
+        result = {}
+        
+        result["bpf_entropy"] = bpf_theory
+        result["compressed"] = compressed_data
+        result["bpf_real"] = bpf_real
+
+        
+        if return_latent:
+            q_latent = quantize(latent, "dequantize", mean)
+            result["q_latent"] = q_latent
+            
+        if return_time:
+            result["elapsed_time"] = elapsed_time
+        
+        return result
     
     def decompress(self, latent_string, hyper_latent_string, original_shape, hyper_shape, device = "cuda"):
         B, _, T, _, _ = original_shape
@@ -200,6 +238,9 @@ class Compressor(nn.Module):
         if return_time:
             torch.cuda.synchronize()  # Wait for all GPU ops to finish
             start_time = time.time()
+            
+        # q_latent, q_hyper_latent, state4bpp, mean = self.encode(x)
+        
         
         latent = self.encode(x)
         hyper_latent = self.hyper_encode(latent) 
@@ -207,12 +248,17 @@ class Compressor(nn.Module):
         mean, scale = self.hyper_decode(q_hyper_latent)
         q_latent = quantize(latent, "dequantize", mean.detach())
         
+        
         if return_time:
             torch.cuda.synchronize()  # Wait for all GPU ops to finish
             result["encoding_time"] = time.time() - start_time
             
+            
+            
         state4bpp = {"latent": latent, "hyper_latent":hyper_latent, "mean":mean, "scale":scale }    
         frame_bit, bpp = self.bpp(x.shape, state4bpp)
+        
+        
         
         if return_time:
             torch.cuda.synchronize()  # Wait for all GPU ops to finish
@@ -261,6 +307,7 @@ class ResnetCompressor(Compressor):
         self.deconv_layer = nn.ConvTranspose3d if d3 else nn.ConvTranspose2d
         
         self.build_network()
+        
 
     def build_network(self):
 
@@ -316,6 +363,8 @@ class ResnetCompressor(Compressor):
                 )
             )
 
+            
+
 class CompressorMix(nn.Module):
     def __init__(
         self,
@@ -326,8 +375,7 @@ class CompressorMix(nn.Module):
         channels=3,
         out_channels=3,
         d3=False,
-        sr_dim = 16,
-        device = 'cuda'
+        sr_dim = 16
     ):
         super().__init__()  # Initialize the nn.Module parent class
 
@@ -348,86 +396,47 @@ class CompressorMix(nn.Module):
         self.sr_model, self.loaded_params, self.not_loaded_params = super_resolution_model(
             img_size=64, in_chans=channels, out_chans=out_channels, sr_type = "BCRN", sr_dim = sr_dim
         )
-        self.device = device
-
-    def compress(self, x):
-        return self.entropy_model.compress_for_cpp(x)
-
-    def forward(self, x):
+    
+    def forward(self, x, return_time = False):
+        B = x.shape[0]
         
-        q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B = self.compress(x)
+        results = self.entropy_model(x, return_time)
+        outputs = results["output"]
         
-        return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        # Apply super-resolution model
+        if return_time:
+            torch.cuda.synchronize()  # Wait for all GPU ops to finish
+            start_time = time.time()
+            
+        outputs = self.sr_model(outputs)  # Use self.sr_model instead of sr_model
+        
+        if return_time:
+            torch.cuda.synchronize()  # Wait for all GPU ops to finish
+            results["decoding_time"] += time.time() - start_time
+            
+        
+        # Reshape if needed
+        outputs = reshape_batch_2d_3d(outputs, B)
+        results["output"] = outputs
+        
+        return results
 
-device = sys.argv[1] # Setting device (cuda or cpu for now)
-if not torch.cuda.is_available(): # If GPU is not avaiable
-    device = 'cpu'
-
-def remove_module_prefix(state_dict):
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            new_key = k.replace("module.", "")
-            new_state_dict[new_key] = v
-        return new_state_dict
-
-model = CompressorMix(
-    dim=16,
-    dim_mults=[1, 2, 3, 4],
-    reverse_dim_mults=[4, 3, 2],
-    hyper_dims_mults=[4, 4, 4],
-    channels=1,
-    out_channels=1,
-    d3=True,
-    sr_dim=16,
-    device = device
-)
-
-state_dict = remove_module_prefix(torch.load('./pretrained/caesar_v.pt', map_location=device))
-model.load_state_dict(state_dict)
-
-quantized_cdf, cdf_length, offset = model.entropy_model.prior._update(30)
-medians = model.entropy_model.prior.medians.detach()
-
-cdf_length = cdf_length.to(torch.int32)
-
-model.entropy_model.range_coder = RangeCoder(_quantized_cdf = quantized_cdf, _cdf_length= cdf_length, _offset= offset, medians = medians, device=device)
-
-gs_quantized_cdf = model.entropy_model.range_coder.gaussian._quantized_cdf
-gs_cdf_length = model.entropy_model.range_coder.gaussian._cdf_length
-gs_offset = model.entropy_model.range_coder.gaussian._offset
-
-os.makedirs('./exported_model/', exist_ok=True)
-
-quantized_cdf.detach().cpu().numpy().tofile('exported_model/vbr_quantized_cdf.bin')
-cdf_length.detach().cpu().numpy().tofile('exported_model/vbr_cdf_length.bin')
-offset.to(torch.int32).detach().cpu().numpy().tofile('exported_model/vbr_offset.bin')
-
-gs_quantized_cdf.detach().cpu().numpy().tofile('exported_model/gs_quantized_cdf.bin')
-gs_cdf_length.detach().cpu().numpy().tofile('exported_model/gs_cdf_length.bin')
-gs_offset.detach().cpu().numpy().tofile('exported_model/gs_offset.bin')
-
-model.eval()
-with torch.no_grad():
-    print('device: ', device)
-    model = model.to(device)
-    example_inputs=(torch.randn(8, 1, 8, 256, 256, device=device),)
-    batch_dim = torch.export.Dim("batch", min=1, max=255)
-    # [Optional] Specify the first dimension of the input x as dynamic.
-    exported = torch.export.export(model, example_inputs, dynamic_shapes={"x": {0: batch_dim}})
-    # [Note] In this example we directly feed the exported module to aoti_compile_and_package.
-    # Depending on your use case, e.g. if your training platform and inference platform
-    # are different, you may choose to save the exported model using torch.export.save and
-    # then load it back using torch.export.load on your inference platform to run AOT compilation.
-    output_path = torch._inductor.aoti_compile_and_package(
-        exported,
-        # [Optional] Specify the generated shared library path. If not specified,
-        # the generated artifact is stored in your system temp directory.
-        package_path=os.path.join(os.getcwd(), "exported_model/caesar_compressor.pt2"),
-    )
-
-file_path = "exported_model/caesar_compressor.pt2"
-
-if os.path.isfile(file_path):
-    print('Exporting compressor is COMPLETED')
-else:
-    print('Exporting compressor is NOT completed')
+    
+    def compress(self, x, return_latent = False,  real = False):
+        return self.entropy_model.compress(x, return_latent, real)
+    
+    def decompress(self, latent_string, hyper_latent_string, original_shape, hyper_shape, device = "cuda"):
+        B = original_shape[0]
+        
+        outputs = self.entropy_model.decompress(latent_string, hyper_latent_string, original_shape, hyper_shape, device)
+        outputs = self.sr_model(outputs)
+        
+        outputs = reshape_batch_2d_3d(outputs, B)
+        return outputs
+    
+    def decode(self, x, batch_size):
+        x = self.entropy_model.decode(x)
+        x = self.sr_model(x)
+        x = reshape_batch_2d_3d(x, batch_size)
+        return x
+    
