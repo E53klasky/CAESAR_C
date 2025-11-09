@@ -3,12 +3,10 @@
 #include "runGaeCuda.h" 
 #include <iostream>
 #include <fstream>
-// ** JL modified ** //
 #include <cmath>
 #include <limits>
-// **** //
 
-// Helper functions
+
 template<typename T>
 std::vector<T> load_array_from_bin(const std::string& filename) {
     std::ifstream input_file(filename , std::ios::binary);
