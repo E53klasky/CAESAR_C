@@ -164,7 +164,7 @@ int main() {
     try {
 
 //  for ci test must be 1x1x20x256x256 cpu
-        const std::vector<int64_t> shape = { 1, 1, 20, 256, 256 };
+        const std::vector<int64_t> shape = { 1, 1, 100, 500, 500 };
         const std::string raw_path = "TCf48.bin.f32";
 
         const std::string out_dir = "./output/";
@@ -180,13 +180,14 @@ int main() {
         // to fix it not doing this and taking out
         // 256*256*8 = 524288 
 
-if (shape[3] >= 256 && shape[4] >= 256) {
-    std::tie(raw_5d, padding_info) = to_5d_and_pad(raw, shape[3], shape[4]);
-} else {
-    std::tie(raw_5d, padding_info) = to_5d_and_pad(raw, 256, 256);
-}
+        if (shape[3] >= 256 && shape[4] >= 256) {
+            std::tie(raw_5d , padding_info) = to_5d_and_pad(raw , shape[3] , shape[4]);
+        }
+        else {
+            std::tie(raw_5d , padding_info) = to_5d_and_pad(raw , 256 , 256);
+        }
 
-        // Device setting
+                // Device setting
         torch::Device compression_device = torch::Device(torch::kCPU);
         torch::Device decompression_device = torch::Device(torch::kCPU);
 

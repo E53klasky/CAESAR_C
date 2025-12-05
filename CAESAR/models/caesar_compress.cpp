@@ -424,7 +424,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             torch::Tensor batched_indexes = torch::cat(batch_indexes , 0).to(device_);
 
 
-            std::vector<torch::Tensor> inputs = { batched_input.to(torch::kDouble) };
+            std::vector<torch::Tensor> inputs = { batched_input.to(torch::kFloat32) };
             std::cout << "here" << std::endl;
             std::vector<torch::Tensor> outputs = compressor_model_->run(inputs);
             std::cout << "\n[DEBUG] Compressor model output tensors:" << std::endl;
@@ -478,7 +478,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             batch_max = 0.0;
             batch_min = 1000000.0;
 
-            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kDouble) });
+            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kFloat32) });
             std::cout << "passed hyperout" << std::endl;
             torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
             torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);

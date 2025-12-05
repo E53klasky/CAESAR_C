@@ -216,7 +216,7 @@ torch::Tensor Decompressor::decompress(
             decoded_hyper_latents.select(0 , (long)i).copy_(hyper_tensor);
         }
 
-        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kDouble).to(device_) });
+        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kFloat32).to(device_) });
         torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
         torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
 
