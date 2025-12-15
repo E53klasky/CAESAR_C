@@ -165,40 +165,6 @@ torch::Tensor Compressor::deblockHW(const torch::Tensor& data ,
     return result;
 }
 
-
-double relative_rmse_error(const torch::Tensor& x , const torch::Tensor& y) {
-
-    TORCH_CHECK(x.sizes() == y.sizes() , "Input tensor shapes do not match.");
-
-    torch::Tensor x_double = x.to(torch::kDouble);
-    torch::Tensor y_double = y.to(torch::kDouble);
-
-    torch::Tensor diff = x_double - y_double;
-    torch::Tensor squared_error = torch::pow(diff , 2);
-    torch::Tensor mse_tensor = torch::mean(squared_error);
-
-    torch::Tensor maxv_tensor = torch::max(x_double);
-
-    torch::Tensor minv_tensor = torch::min(x_double);
-
-    double mse = mse_tensor.item<double>();
-    double maxv = maxv_tensor.item<double>();
-    double minv = minv_tensor.item<double>();
-
-    double rmse = std::sqrt(mse);
-    double range = maxv - minv;
-
-    if (range == 0) {
-        if (rmse == 0) {
-            return 0.0;
-        }
-
-        return std::numeric_limits<double>::infinity();
-    }
-
-    return rmse / range;
-}
-
 std::tuple<torch::Tensor , std::vector<int>> padding(
     const torch::Tensor& data ,
     std::pair<int , int> block_size = { 8, 8 })
@@ -237,7 +203,6 @@ std::tuple<torch::Tensor , std::vector<int>> padding(
     auto padded_data = data_padded.view(new_shape);
 
     std::vector<int> padding_info = { top, down, left, right };
-    std::cout << "[CPU RSS] in padding method" << rss_gb() << " GiB\n"; 
     return { padded_data, padding_info };
 }
 
@@ -621,6 +586,8 @@ std::cout << "[MEM] after hyper_decompressor_model run = "
     std::string codec_alg = "Zstd";
     std::pair<int , int> patch_size = { 8, 8 };
 
+recon_tensor = torch::Tensor();  
+recon_tensor_deblock = torch::Tensor();  
     std::cout<<"[MEM] before init pca compressor"<<rss_gb() <<" Gib\n";
     PCACompressor pca_compressor(rel_eb ,
         quan_factor ,

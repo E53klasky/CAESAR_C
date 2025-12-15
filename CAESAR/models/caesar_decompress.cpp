@@ -13,7 +13,6 @@ torch::Tensor deblockHW(const torch::Tensor& data ,
     int64_t nH ,
     int64_t nW ,
     const std::vector<int64_t>& padding);
-double relative_rmse_error(const torch::Tensor& x , const torch::Tensor& y);
 
 std::tuple<torch::Tensor , std::vector<int>> padding(
     const torch::Tensor& data ,
