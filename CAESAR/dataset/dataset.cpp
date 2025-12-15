@@ -608,7 +608,7 @@ size_t ScientificDataset::size() const {
 }
 
 torch::Tensor ScientificDataset::original_data() const {
-    torch::Tensor data = data_input.clone();
+    torch::Tensor data = data_input;
 
 
     if (!train_mode) {
