@@ -162,7 +162,7 @@ std::vector<uint8_t> BitUtils::bitsToBytes(const torch::Tensor& bitArray) {
         bits = bitArray.to(torch::kUInt8);
     }
     else {
-        bits = bitArray.clone();
+        bits = bitArray;
     }
 
     bits = bits.contiguous().cpu();
@@ -460,12 +460,12 @@ torch::Tensor PCACompressor::decompress(const torch::Tensor& reconsData,
     const CompressedData& compressedData) {
     
     if (metaData.dataBytes == 0 || metaData.pcaBasis.numel() == 0) {
-        return reconsData.clone();
+        return reconsData;
     }
     
     auto inputShape = reconsData.sizes();
    
-    torch::Tensor reconsDevice = reconsData.clone().to(device_);
+    torch::Tensor reconsDevice = reconsData.to(device_);
     
     bool needsReshape = (inputShape.size() != 2);
     if (needsReshape) {
@@ -871,7 +871,7 @@ MainData PCACompressor::decompressLossless(
             throw std::runtime_error("mask_length decompression failed");
     }
     mainData.maskLength = torch::from_blob(maskLengthVec.data() ,
-        { numVecsProcessed } , torch::kUInt8).clone().to(device_);
+        { numVecsProcessed } , torch::kUInt8).to(device_);
     offset += compressedSizes[2];
 
     int64_t nUniqueVals = metaData.uniqueVals.size(0);
