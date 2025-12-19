@@ -346,6 +346,8 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     torch::Tensor reconError = torch::abs(reconstructedResidual - residualPca);
     double reconErrorMax = reconError.max().item<double>();
 
+    reconstructedResidual = torch::Tensor();
+    reconError = torch::Tensor();
 
     if (reconErrorMax > error_) {
         std::cout << "[WARN] High PCA reconstruction error (" << reconErrorMax
@@ -356,13 +358,15 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         pcaBasis = pca.components();
         allCoeff = torch::matmul(residualPca , pcaBasis.transpose(0 , 1));
     }
-
+   
+    
     originalDataDevice = torch::Tensor();
     reconsDataDevice = torch::Tensor();
     residualPca = torch::Tensor();
 #ifdef USE_CUDA
     cleanupGPUMemory();
 #endif
+    std::cout<<"allCoefffpower\n";
     torch::Tensor allCoeffPower = allCoeff.pow(2);
     torch::Tensor sortIndex = torch::argsort(allCoeffPower , 1 , true);
 
