@@ -168,7 +168,7 @@ std::vector<uint8_t> BitUtils::bitsToBytes(const torch::Tensor& bitArray) {
         bits = bitArray;
     }
 
-    bits = bits.contiguous().cpu();
+    bits = bits.contiguous();
 
     auto data = bits.data_ptr<uint8_t>();
     int64_t numBits = bits.numel();
@@ -915,9 +915,9 @@ MainData PCACompressor::decompressLossless(
     return mainData;
 }
 
-
+// chnages maybe no cpu
 torch::Tensor PCACompressor::toCPUContiguous(const torch::Tensor& tensor) {
-    return tensor.cpu().contiguous();
+    return tensor.contiguous();
 }
 
 std::vector<uint8_t> PCACompressor::serializeTensor(const torch::Tensor& tensor) {
