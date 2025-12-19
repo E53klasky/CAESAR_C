@@ -368,16 +368,18 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 #endif
     std::cout<<"allCoefffpower\n";
     torch::Tensor allCoeffPower = allCoeff.pow(2);
-    torch::Tensor sortIndex = torch::argsort(allCoeffPower , 1 , true);
+torch::Tensor sortIndex = torch::argsort(allCoeffPower, 1, true);
+torch::Tensor allCoeffSorted = torch::gather(allCoeff, 1, sortIndex);
+torch::Tensor quanCoeffSorted = torch::round(allCoeffSorted / quanBin_) * quanBin_;
+torch::Tensor resCoeffSorted = allCoeffSorted - quanCoeffSorted;
 
-    torch::Tensor allCoeffSorted = torch::gather(allCoeff , 1 , sortIndex);
-    torch::Tensor quanCoeffSorted = torch::round(allCoeffSorted / quanBin_) * quanBin_;
-    torch::Tensor resCoeffSorted = allCoeffSorted - quanCoeffSorted;
+// temporary tensor for in-place memory efficiency
+torch::Tensor tmp = resCoeffSorted.pow(2);
+torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower, 1, sortIndex) - tmp;
+tmp.reset(); // free memory
 
-    allCoeffSorted = torch::Tensor();
-    torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower , 1 , sortIndex) - resCoeffSorted.pow(2);
-    torch::Tensor stepErrors = torch::ones_like(allCoeffPowerDesc);
-    torch::Tensor remainErrors = torch::sum(allCoeffPower , 1);
+torch::Tensor stepErrors = torch::ones_like(allCoeffPowerDesc);
+torch::Tensor remainErrors = torch::sum(allCoeffPower, 1);
 
     std::cout<<"before for loop of compress in gae\n";
     for (int64_t i = 0; i < stepErrors.size(1); ++i) {
