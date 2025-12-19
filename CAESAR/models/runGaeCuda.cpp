@@ -148,9 +148,12 @@ torch::Tensor indexMaskReverse(const torch::Tensor& prefixMask ,
     int64_t numCols) {
     auto device = prefixMask.device();
     auto arange = torch::arange(numCols , torch::dtype(torch::kLong).device(device));
-    auto mask = arange.unsqueeze(0).le(maskLength.unsqueeze(1));
-    auto arr2d = torch::zeros({ maskLength.size(0), numCols } ,
-        torch::dtype(torch::kBool).device(device));
+    auto maskLength_d = maskLength.to(prefixMask.device());
+auto mask = arange.unsqueeze(0).le(maskLength_d.unsqueeze(1));
+
+auto arr2d = torch::zeros({ maskLength_d.size(0), numCols },
+                          torch::dtype(torch::kBool).device(device));
+
 
     arr2d.index_put_({ mask } , prefixMask.to(torch::kBool).reshape({ -1 }));
     return arr2d;
@@ -436,8 +439,8 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     cleanupGPUMemory();
 #endif
     MetaData metaData;
-    metaData.pcaBasis = pcaBasis;
-    metaData.uniqueVals = uniqueVals;
+    metaData.pcaBasis = pcaBasis.to(device_);
+metaData.uniqueVals = uniqueVals.to(device_);
     metaData.quanBin = quanBin_;
     metaData.nVec = processMask.size(0);
     metaData.prefixLength = prefixMaskFlatten.size(0);
@@ -494,7 +497,7 @@ torch::Tensor PCACompressor::decompress(const torch::Tensor& reconsData,
         reconsDevice = vector2Block(reconsDevice, inputShape.vec(), patchSize_);
     }
     
-    return reconsDevice.cpu();
+    return reconsDevice;
 }
 
 std::pair<std::unique_ptr<CompressedData> , int64_t>
@@ -503,8 +506,8 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
     auto compressedData = std::make_unique<CompressedData>();
     int64_t totalBytes = 0;
 
-    auto processMaskBytes = BitUtils::bitsToBytes(mainData.processMask.to(torch::kUInt8).cpu());
-    auto prefixMaskBytes = BitUtils::bitsToBytes(mainData.prefixMask.to(torch::kUInt8).cpu());
+    auto processMaskBytes = BitUtils::bitsToBytes(mainData.processMask.to(torch::kUInt8));
+    auto prefixMaskBytes = BitUtils::bitsToBytes(mainData.prefixMask.to(torch::kUInt8));
     auto maskLengthBytes = serializeTensor(mainData.maskLength);
 
     torch::Tensor coeffIntConverted;
