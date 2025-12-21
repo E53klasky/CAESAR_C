@@ -6,18 +6,6 @@
 #include <fstream>
 #include <cmath>
 #include <limits>
-#include <unistd.h> // remove soon
-
-
-// remove this soon
-double rss_gb() {
-    std::ifstream statm("/proc/self/statm");
-    long dummy = 0, rss_pages = 0;
-    statm >> dummy >> rss_pages;
-
-    return (double)rss_pages * sysconf(_SC_PAGESIZE)
-           / (1024.0 * 1024 * 1024);
-}
 
 template<typename T>
 std::vector<T> load_array_from_bin(const std::string& filename) {
