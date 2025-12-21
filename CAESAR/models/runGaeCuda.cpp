@@ -281,8 +281,16 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         }
     }
 
-    torch::Tensor originalDataDevice = originalData.to(device_ , true);
-    torch::Tensor reconsDataDevice = reconsData.to(device_ , true);
+    // remove true if you notice race condtiion
+torch::Tensor originalDataDevice = originalData.device() == device_ 
+    ? originalData 
+    : originalData.to(device_, true);
+    
+torch::Tensor reconsDataDevice = reconsData.device() == device_
+    ? reconsData
+    : reconsData.to(device_, true);
+
+
 
     if (inputShape.size() == 2) {
         assert(originalDataDevice.size(1) == vectorSize_);
@@ -296,6 +304,7 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     torch::Tensor norms = torch::linalg_norm(residualPca , c10::nullopt , { 1 });
     torch::Tensor processMask = norms > errorBound_;
+    norms = torch::Tensor();
     if (torch::sum(processMask).item<int64_t>() <= 0) {
         MetaData metaData;
         metaData.GAE_correction_occur = false;
@@ -330,6 +339,7 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         metaData.uniqueVals = torch::empty({ 0 } , torch::kFloat32);
         metaData.quanBin = quanBin_;
         metaData.nVec = originalData.size(0);
+        
         metaData.prefixLength = 0;
         metaData.dataBytes = 0;
 
@@ -373,10 +383,10 @@ torch::Tensor allCoeffSorted = torch::gather(allCoeff, 1, sortIndex);
 torch::Tensor quanCoeffSorted = torch::round(allCoeffSorted / quanBin_) * quanBin_;
 torch::Tensor resCoeffSorted = allCoeffSorted - quanCoeffSorted;
 
-// temporary tensor for in-place memory efficiency
+
 torch::Tensor tmp = resCoeffSorted.pow(2);
 torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower, 1, sortIndex) - tmp;
-tmp.reset(); // free memory
+tmp = torch::Tensor();
 
 torch::Tensor stepErrors = torch::ones_like(allCoeffPowerDesc);
 torch::Tensor remainErrors = torch::sum(allCoeffPower, 1);

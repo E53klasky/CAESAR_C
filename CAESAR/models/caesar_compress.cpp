@@ -273,6 +273,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     std::cout << "Batch size: " << batch_size << std::endl;
 
     ScientificDataset dataset(config);
+    std::cout << "[MEM] dataset loaded " << rss_gb() << " GiB\n";
 
     CompressionResult result;
     result.num_samples = 0;
@@ -539,6 +540,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor , block_info_1 , block_info_2 , block_info_3);
     std::cout<< "[MEM] before padding "<< rss_gb()  <<" Gib\n";
     std::tuple<torch::Tensor , std::vector<int>> padding_original = padding(dataset.original_data());
+    dataset.clear();
     std::cout<< "[MEM] first padded og " << rss_gb() <<" Gib\n";
     std::tuple<torch::Tensor , std::vector<int>> padding_recon = padding(recon_tensor_deblock);
     std::cout << "[MEM] second padded padding_rec"<< rss_gb() <<" GiB\n";
@@ -581,7 +583,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         patch_size);
     std::cout<<"[MEM] after init pca compressor "<<rss_gb() <<" GiB\n";
 
-    auto gae_compression_result = pca_compressor.compress(padded_original_tensor_norm.to(device_) , padded_recon_tensor_norm.to(device_));
+    auto gae_compression_result = pca_compressor.compress(padded_original_tensor_norm , padded_recon_tensor_norm);
     padded_original_tensor_norm = torch::Tensor();
     std::cout << "[MEM] after pca_compress run = " << rss_gb() << " GiB\n";
     result.gaeMetaData.GAE_correction_occur = gae_compression_result.metaData.GAE_correction_occur;
