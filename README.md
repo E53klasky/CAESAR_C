@@ -123,3 +123,4 @@ export CAESAR_MODEL_DIR=/path/to/custom/models
 ```
 
 For most users, no configuration is needed - CAESAR will find the models automatically.
+
