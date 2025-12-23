@@ -426,9 +426,56 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     selectedCoeffUnsortQ = torch::Tensor();
     allCoeff = torch::Tensor();
-    auto uniqueResult = at::_unique(coeffIntFlatten , true , true);
-    torch::Tensor uniqueVals = std::get<0>(uniqueResult);
-    torch::Tensor inverseIndices = std::get<1>(uniqueResult);
+
+    std::vector<at::Tensor> inverse_parts;
+    std::vector<at::Tensor> unique_parts;
+    int64_t chunk_size = 1LL << 30;
+    int64_t numel = coeffIntFlatten.numel();
+    int64_t offset = 0;
+
+    for (int64_t start = 0; start < numel; start += chunk_size) {
+        int64_t current_chunk_size = std::min(chunk_size, numel - start);
+        auto chunk = coeffIntFlatten.narrow(0, start, current_chunk_size);
+        auto partial_unique = at::_unique(chunk, true, true);
+
+        unique_parts.push_back(std::get<0>(partial_unique));
+
+        auto inv = std::get<1>(partial_unique) + offset;
+        inverse_parts.push_back(inv);
+        offset += std::get<0>(partial_unique).size(0);
+    }
+
+    coeffIntFlatten = torch::Tensor();
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
+
+    torch::Tensor all_uniques = torch::cat(unique_parts, 0);
+    unique_parts.clear();
+    unique_parts.shrink_to_fit();
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
+
+    torch::Tensor all_inverses = torch::cat(inverse_parts, 0);
+    inverse_parts.clear();
+    inverse_parts.shrink_to_fit();
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
+
+    auto final_unique = at::_unique(all_uniques, true, true);
+    torch::Tensor uniqueVals = std::get<0>(final_unique);
+    torch::Tensor remap = std::get<1>(final_unique);
+
+    final_unique = std::tuple<at::Tensor, at::Tensor>();  
+    all_uniques = torch::Tensor();
+
+    torch::Tensor inverseIndices = remap.index_select(0, all_inverses);
+
+    remap = torch::Tensor();
+    all_inverses = torch::Tensor();
+
     coeffIntFlatten = inverseIndices;
 #ifdef USE_CUDA
     cleanupGPUMemory();
