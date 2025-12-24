@@ -156,7 +156,10 @@ torch::Tensor Decompressor::decompress(
         flat_indexes.data() ,
         { (long)meta.indexes.size(), (long)meta.indexes[0].size() } ,
         idx_opts_cpu
-    ).clone().to(device_);
+    ).to(device_);// remove clone 
+
+    flat_indexes.clear();
+    flat_indexes.shrink_to_fit();
 
 
 
@@ -271,9 +274,11 @@ torch::Tensor Decompressor::decompress(
     std::cout << std::endl;
 
     torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor , block_info_1 , block_info_2 , block_info_3);
+    recon_tensor = torch::Tensor();
 
     if (comp_result.gaeMetaData.GAE_correction_occur) {
         std::tuple<torch::Tensor , std::vector<int>> padding_recon = padding(recon_tensor_deblock);
+        recon_tensor_deblock = torch::Tensor();
         torch::Tensor padded_recon_tensor = std::get<0>(padding_recon);
         std::vector<int> padding_recon_info = std::get<1>(padding_recon);
 
