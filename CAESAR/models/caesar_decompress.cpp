@@ -156,7 +156,7 @@ torch::Tensor Decompressor::decompress(
         flat_indexes.data() ,
         { (long)meta.indexes.size(), (long)meta.indexes[0].size() } ,
         idx_opts_cpu
-    ).to(device_);// remove clone 
+    ).clone().to(device_);
 
     flat_indexes.clear();
     flat_indexes.shrink_to_fit();
