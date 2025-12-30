@@ -389,27 +389,17 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             hyper_outputs.shrink_to_fit();
 
             torch::Tensor q_latent = (latent - mean).to(torch::kInt32);;
-            
+
             torch::Tensor q_latent_cpu = q_latent.cpu().contiguous();
             torch::Tensor latent_indexes_cpu = latent_indexes_recon.to(torch::kInt32).cpu().contiguous();
             torch::Tensor q_hyper_latent_cpu = q_hyper_latent.to(torch::kInt32).cpu().contiguous();
             torch::Tensor hyper_indexes_cpu = hyper_indexes.to(torch::kInt32).cpu().contiguous();
-            /*
-            const int32_t* q_ptr = q_latent_cpu.data_ptr<int32_t>();
-            const int32_t* idx_ptr = latent_indexes_cpu.data_ptr<int32_t>();
-            const int32_t* hyper_q_ptr = q_hyper_latent_cpu.data_ptr<int32_t>();
-            const int32_t* hyper_idx_ptr = hyper_indexes_cpu.data_ptr<int32_t>();
-            
-            int64_t latent_stride = q_latent_cpu.size(1);
-            int64_t idx_stride = latent_indexes_cpu.size(1);
-            int64_t hyper_stride = q_hyper_latent_cpu.size(1);
-            int64_t hyper_idx_stride = hyper_indexes_cpu.size(1);
-            */
+
             int64_t num_input_samples = batch_inputs.size();
             int64_t num_latent_codes = q_latent.sizes()[0];
 
             for (int64_t j = 0; j < num_latent_codes; j++) {
-                
+
                 std::vector<int32_t> latent_symbol = tensor_to_vector<int32_t>(
                     q_latent_cpu.select(0 , j).reshape(-1)
                 );
@@ -422,17 +412,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
                 std::vector<int32_t> hyper_index = tensor_to_vector<int32_t>(
                     hyper_indexes_cpu.select(0 , j).reshape(-1)
                 );
-                /*
-                const int32_t* row_q_start = q_ptr + (j * latent_stride);
-                const int32_t* row_idx_start = idx_ptr + (j * idx_stride);
-                const int32_t* row_hq_start = hyper_q_ptr + (j * hyper_stride);
-                const int32_t* row_hidx_start = hyper_idx_ptr + (j * hyper_idx_stride);
 
-                std::vector<int32_t> latent_symbol(row_q_start, row_q_start + latent_stride);
-                std::vector<int32_t> latent_index(row_idx_start, row_idx_start + idx_stride);
-                std::vector<int32_t> hyper_symbol(row_hq_start, row_hq_start + hyper_stride);
-                std::vector<int32_t> hyper_index(row_hidx_start, row_hidx_start + hyper_idx_stride);                
-                */
                 std::string latent_encoded = range_encoder.encode_with_indexes(
                     latent_symbol , latent_index ,
                     gs_quantized_cdf_ , gs_cdf_length_ , gs_offset_
@@ -455,16 +435,6 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             batch_max = 0.0;
             batch_min = 1000000.0;
 
-            //std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kDouble) });
-            //torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
-            //torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
-            //hyper_outputs.clear();
-            //hyper_outputs.shrink_to_fit();
-            //std::cout << "[DEBUG] q_hyper_latent Max (float): " << q_hyper_latent.max().item<float>() << std::endl;
-            //std::cout << "[DEBUG] q_hyper_latent Min (float): " << q_hyper_latent.min().item<float>() << std::endl;
-            //std::cout << "[DEBUG] q_latent Max (float): " << q_latent.max().item<float>() << std::endl;
-            //std::cout << "[DEBUG] q_latent Min (float): " << q_latent.min().item<float>() << std::endl;
-            
             torch::Tensor q_latent_with_offset = q_latent.to(torch::kFloat32) + mean;
             auto decoded_latents_sizes = q_latent_with_offset.sizes();
 
@@ -622,22 +592,6 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         result.gaeMetaData.pcaBasis = tensor_to_2d_vector<float>(gae_compression_result.metaData.pcaBasis);
         result.gaeMetaData.uniqueVals = tensor_to_vector<float>(gae_compression_result.metaData.uniqueVals);
 
-        //** JL modified **//
-        // Below block is for decompression stage. We can skip some of this part in comrpession stage
-        /*
-        int64_t pca_rows = result.gaeMetaData.pcaBasis.size();
-        int64_t pca_cols = result.gaeMetaData.pcaBasis[0].size();
-
-        std::vector<float> pca_vec;
-        pca_vec.reserve(pca_rows * pca_cols);
-
-        for (const auto& row_vec : result.gaeMetaData.pcaBasis) {
-            pca_vec.insert(pca_vec.end() , row_vec.begin() , row_vec.end());
-        }
-        torch::Tensor pca_vec_1d = torch::tensor(pca_vec);
-        torch::Tensor pcaBasis = pca_vec_1d.reshape({ pca_rows, pca_cols });
-        */
-        
         gae_record_metaData.pcaBasis = gae_compression_result.metaData.pcaBasis.to(device_);
         gae_record_metaData.uniqueVals = gae_compression_result.metaData.uniqueVals.to(device_);
         gae_record_metaData.quanBin = result.gaeMetaData.quanBin;
@@ -658,8 +612,6 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
 
     else {
         std::cout << "[GAE SKIPPED] No data processed by GAE." << std::endl;
-        // 'result.gaeMetaData.pcaBasis' and 'uniqueVals' are already emtpy. Skip record these.
-
     }
 
     if (!result.compressionMetaData.indexes.empty()) {

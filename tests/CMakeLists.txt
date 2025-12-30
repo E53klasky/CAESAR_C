@@ -15,8 +15,6 @@ else()
     set(FILESYSTEM_LIB "")
 endif()
 
-# GPU Detection Logic (Modified for Hybrid Support)
-## Frontier(HIP) 또는 NVIDIA(CUDA) detect
 if(TORCH_CUDA_ARCH_LIST OR CUDA_FOUND OR HIP_FOUND)
     set(USE_CUDA ON)
     message(STATUS "Tests: GPU Support Enabled")
@@ -27,17 +25,8 @@ endif()
 
 set(NVCOMP_FOUND OFF)
 if(USE_CUDA)
-    find_path(NVCOMP_INCLUDE_DIR
-        NAMES nvcomp.h nvcomp/nvcomp.h
-        HINTS ENV NVCOMP_ROOT ENV NVCOMP_DIR
-        PATH_SUFFIXES include
-    )
-
-    find_library(NVCOMP_LIBRARY
-        NAMES nvcomp
-        HINTS ENV NVCOMP_ROOT ENV NVCOMP_DIR
-        PATH_SUFFIXES lib lib64
-    )
+    find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h nvcomp/nvcomp.h)
+    find_library(NVCOMP_LIBRARY NAMES nvcomp)
 
     if(NVCOMP_INCLUDE_DIR AND NVCOMP_LIBRARY)
         set(NVCOMP_FOUND TRUE)
@@ -81,11 +70,6 @@ if(USE_CUDA)
 
     if(HIP_FOUND)
         target_compile_definitions(test_runGaeCuda PRIVATE USE_ROCM)
-        if(DEFINED ENV{ROCM_PATH})
-            target_include_directories(test_runGaeCuda PRIVATE $ENV{ROCM_PATH}/include)
-        elseif(EXISTS "/opt/rocm/include")
-            target_include_directories(test_runGaeCuda PRIVATE "/opt/rocm/include")
-        endif()
     endif()
 
     if(CUDA_FOUND)

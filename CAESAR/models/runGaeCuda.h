@@ -18,22 +18,22 @@
 #include <torch/script.h>
 #include <unordered_map>
 #include <algorithm>
-//** JL modified **//
-#ifdef USE_CUDA
-    #if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
-        #include <hip/hip_runtime.h>
-        #include <c10/hip/HIPCachingAllocator.h>
-    #else
-        #include <cuda_runtime.h>
-        #include <cublas_v2.h>
-        #include <c10/cuda/CUDACachingAllocator.h>
 
-        #ifdef ENABLE_NVCOMP
-            #include <nvcomp/lz4.h>
-            #include <nvcomp/cascaded.h>
-            #include <nvcomp/zstd.h>   
-        #endif
-    #endif
+#ifdef USE_CUDA
+#if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_runtime.h>
+#include <c10/hip/HIPCachingAllocator.h>
+#else
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <c10/cuda/CUDACachingAllocator.h>
+
+#ifdef ENABLE_NVCOMP
+#include <nvcomp/lz4.h>
+#include <nvcomp/cascaded.h>
+#include <nvcomp/zstd.h>   
+#endif
+#endif
 #endif
 
 #include "model_utils.h"
@@ -131,14 +131,6 @@ private:
     int vectorSize_;
     double errorBound_;
     double error_;
-
-//     std::pair<std::unique_ptr<CompressedData> , int64_t> compressLossless(
-//         const MetaData& metaData ,
-//         const MainData& mainData);
-
-
-//     MainData decompressLossless(const MetaData& metaData ,
-//         const CompressedData& compressedData);
 
     torch::Tensor toCPUContiguous(const torch::Tensor& tensor);
     std::vector<uint8_t> serializeTensor(const torch::Tensor& tensor);

@@ -4,47 +4,31 @@ find_package(PkgConfig)
 find_package(Torch REQUIRED)
 find_package(OpenMP REQUIRED)
 
-# JL Modified
-# 1. Fontier: ZSTD / AOCL-Compression Detection Logic
-set(AOCL_ROOT $ENV{OLCF_AOCL_COMPRESSION_ROOT}) # correct aocl -> will use aocl zstd
-##set(AOCL_ROOT $ENV{AOCL_COMPRESSION_ROOT}) # dummy aocl -> will use system zstd
-if(AOCL_ROOT)
-    message(STATUS ">>> Found AOCL-Compression Environment: ${AOCL_ROOT}")
-    set(ZSTD_INCLUDE_DIR "${AOCL_ROOT}/include")
-
-    find_library(ZSTD_LIBRARY 
-        NAMES aocl_compression zstd 
-        HINTS "${AOCL_ROOT}/lib"
-        NO_DEFAULT_PATH
-    )
-    
-    if(ZSTD_LIBRARY)
-        set(ZSTD_FOUND TRUE)
-        message(STATUS ">>> Using AOCL Optimized Zstd: ${ZSTD_LIBRARY}")
-    endif()
+# ZSTD Detection Logic
+if(PkgConfig_FOUND)
+    pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
 endif()
 
-# If AOCL not found, system default ZSTD search
 if(NOT ZSTD_FOUND)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
+    find_path(ZSTD_INCLUDE_DIR zstd.h)
+    find_library(ZSTD_LIBRARY NAMES aocl_compression zstd)
+    
+    if(ZSTD_INCLUDE_DIR AND ZSTD_LIBRARY)
+        set(ZSTD_FOUND TRUE)
+        message(STATUS "Found Zstd: ${ZSTD_LIBRARY}")
+        
+        add_library(zstd_target UNKNOWN IMPORTED)
+        set_target_properties(zstd_target PROPERTIES
+            IMPORTED_LOCATION "${ZSTD_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIR}"
+        )
+    else()
+        message(FATAL_ERROR "Zstd library not found. Please install libzstd-dev or set CMAKE_PREFIX_PATH")
     endif()
-
-    if(NOT ZSTD_FOUND)
-        find_path(ZSTD_INCLUDE_DIR zstd.h)
-        find_library(ZSTD_LIBRARY NAMES zstd)
-        if(ZSTD_INCLUDE_DIR AND ZSTD_LIBRARY)
-            set(ZSTD_FOUND TRUE)
-            message(STATUS "Found Standard Zstd: ${ZSTD_LIBRARY}")
-        else()
-            message(FATAL_ERROR "Zstd library not found. Please load 'aocl-compression' module or install libzstd-dev")
-        endif()
-    endif()
+else()
+    message(STATUS "Found Zstd via pkg-config: ${ZSTD_LIBRARIES}")
+    add_library(zstd_target ALIAS PkgConfig::ZSTD)
 endif()
-
-# 2. GPU (CUDA/HIP) & NVCOMP Configuration
-# GPU operation is enabled if torch supports GPU
-# This is to make sure that on Frontier, PCA is performed on GPU, whereas ZSTD is on CPU (AOCL)
 
 if(TORCH_CUDA_ARCH_LIST OR CUDA_FOUND OR HIP_FOUND)
     set(USE_CUDA ON)
@@ -60,32 +44,20 @@ endif()
 
 set(NVCOMP_FOUND OFF)
 
-# If GPU enabled, then search for nvcomp
 if(USE_CUDA)
     message(STATUS "Checking for nvcomp (NVIDIA specific)...")
-
-    find_path(NVCOMP_INCLUDE_DIR
-        NAMES nvcomp.h nvcomp/nvcomp.h
-        HINTS ENV NVCOMP_ROOT ENV NVCOMP_DIR
-        PATH_SUFFIXES include
-    )
-
-    find_library(NVCOMP_LIBRARY
-        NAMES nvcomp
-        HINTS ENV NVCOMP_ROOT ENV NVCOMP_DIR
-        PATH_SUFFIXES lib lib64
-    )
-
+    
+    find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h nvcomp/nvcomp.h)
+    find_library(NVCOMP_LIBRARY NAMES nvcomp)
+    
     if(NVCOMP_INCLUDE_DIR AND NVCOMP_LIBRARY)
         set(NVCOMP_FOUND TRUE)
         message(STATUS ">>> Found nvcomp: ${NVCOMP_LIBRARY}")
-        message(STATUS ">>> nvcomp include dir: ${NVCOMP_INCLUDE_DIR}")
     else()
-        message(STATUS ">>> nvcomp NOT found. Will use Hybrid Mode (GPU PCA + CPU ZSTD/AOCL).")
+        message(STATUS ">>> nvcomp NOT found. Will use Hybrid Mode (GPU PCA + CPU ZSTD)")
     endif()
 endif()
 
-# ------------------------------------------------------------------------------
 set(CAESAR_SRC
     CAESAR.cpp
     dataset/dataset.cpp
@@ -103,23 +75,15 @@ target_compile_definitions(caesar_lib PRIVATE
     DEFAULT_CAESAR_MODEL_DIR="${CMAKE_INSTALL_PREFIX}/share/caesar/models"
 )
 
-# [USE_CUDA Configuration]
 if(USE_CUDA)
     target_compile_definitions(caesar_lib PUBLIC USE_CUDA)
     message(STATUS "Build defined with USE_CUDA")
-
+    
     if(HIP_FOUND)
         target_compile_definitions(caesar_lib PUBLIC USE_ROCM)
-        
-        if(DEFINED ENV{ROCM_PATH})
-            target_include_directories(caesar_lib PRIVATE $ENV{ROCM_PATH}/include)
-        elseif(EXISTS "/opt/rocm/include")
-            target_include_directories(caesar_lib PRIVATE "/opt/rocm/include")
-        endif()
     endif()
 endif()
 
-# [NVCOMP Configuration]
 if(NVCOMP_FOUND)
     target_compile_definitions(caesar_lib PRIVATE ENABLE_NVCOMP)
     message(STATUS "Build defined with ENABLE_NVCOMP")
@@ -132,12 +96,10 @@ target_include_directories(caesar_lib
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/models>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/range_coder>
         $<INSTALL_INTERFACE:include/caesar>
-        ${ZSTD_INCLUDE_DIR}
 )
 
-target_link_libraries(caesar_lib PUBLIC torch ${ZSTD_LIBRARY})
+target_link_libraries(caesar_lib PUBLIC zstd_target torch)
 
-# GPU Libraries Linking
 if(USE_CUDA)
     if(CUDA_FOUND)
         target_include_directories(caesar_lib PRIVATE ${CUDA_INCLUDE_DIRS})
@@ -148,11 +110,6 @@ if(USE_CUDA)
         target_include_directories(caesar_lib PRIVATE ${NVCOMP_INCLUDE_DIR})
         target_link_libraries(caesar_lib PUBLIC ${NVCOMP_LIBRARY})
     endif()
-endif()
-
-# ZSTD Linking Log
-if(ZSTD_FOUND)
-    message(STATUS "Final Link: Zstd Support Enabled")
 endif()
 
 if(MPI_FOUND)
@@ -166,7 +123,9 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 target_compile_options(caesar_lib PRIVATE
-    $<$<CONFIG:Release>:-O3 -march=native -mtune=native>
+    $<$<CONFIG:Debug>:-g -O0>
+    $<$<CONFIG:Release>:-O3 -march=native -mtune=native -fprefetch-loop-arrays>
+    $<$<CONFIG:Profile>:-O3 -g -fno-omit-frame-pointer -fno-inline-functions>
 )
 
 if(USE_CUDA)
