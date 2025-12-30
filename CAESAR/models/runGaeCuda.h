@@ -18,16 +18,27 @@
 #include <torch/script.h>
 #include <unordered_map>
 #include <algorithm>
+//** JL modified **//
 #ifdef USE_CUDA
-#include <cuda_runtime.h>
-#include <cublas_v2.h>
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <nvcomp/lz4.h>
-#include <nvcomp/cascaded.h>
-#include <nvcomp/zstd.h>   
+    #if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+        #include <hip/hip_runtime.h>
+        #include <c10/hip/HIPCachingAllocator.h>
+    #else
+        #include <cuda_runtime.h>
+        #include <cublas_v2.h>
+        #include <c10/cuda/CUDACachingAllocator.h>
+
+        #ifdef ENABLE_NVCOMP
+            #include <nvcomp/lz4.h>
+            #include <nvcomp/cascaded.h>
+            #include <nvcomp/zstd.h>   
+        #endif
+    #endif
 #endif
+
 #include "model_utils.h"
 #include <zstd.h> 
+
 class PCA {
 public:
     PCA(int numComponents = -1 , const std::string& device = "cuda");

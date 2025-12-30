@@ -1,0 +1,3 @@
+# run command in interactive mode
+export MIOPEN_DISABLE_CACHE=1
+srun --gpus=1 ../../build/tests/test_caesarCD

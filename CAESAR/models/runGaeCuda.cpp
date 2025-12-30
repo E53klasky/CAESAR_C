@@ -1,19 +1,31 @@
 #include "runGaeCuda.h"
 
 #ifdef USE_CUDA
-#define CHECK_CUDA(cmd) do { \
-  cudaError_t e = (cmd); \
-  if (e != cudaSuccess) { \
-    throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(e)); \
-  } \
-} while(0)
+    // Error Check Macro for CUDA/HIP
+    #if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+        #define CHECK_CUDA(cmd) do { \
+          hipError_t e = (cmd); \
+          if (e != hipSuccess) { \
+            throw std::runtime_error(std::string("HIP error: ") + hipGetErrorString(e)); \
+          } \
+        } while(0)
+    #else
+        #define CHECK_CUDA(cmd) do { \
+          cudaError_t e = (cmd); \
+          if (e != cudaSuccess) { \
+            throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(e)); \
+          } \
+        } while(0)
+    #endif
 
-#define CHECK_NVCOMP(cmd) do { \
-  nvcompStatus_t s = (cmd); \
-  if (s != nvcompSuccess) { \
-    throw std::runtime_error("nvCOMP error in " #cmd); \
-  } \
-} while(0)
+    #ifdef ENABLE_NVCOMP
+        #define CHECK_NVCOMP(cmd) do { \
+          nvcompStatus_t s = (cmd); \
+          if (s != nvcompSuccess) { \
+            throw std::runtime_error("nvCOMP error in " #cmd); \
+          } \
+        } while(0)
+    #endif
 #endif
 
 PCA::PCA(int numComponents , const std::string& device)
@@ -576,16 +588,18 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
 
     const int compressionLevel = 21;
 
-    bool use_gpu = false;
-#ifdef USE_CUDA
-    use_gpu = mainData.coeffInt.is_cuda();
+    //** JL modified **//
+    // ZSTD is on GPU only if nvcomp is enabled
+    bool use_nvcomp = false;
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+    use_nvcomp = device_.is_cuda();
 #endif
 
     std::vector<uint8_t> processMaskCompressed , prefixMaskCompressed , maskLengthCompressed , coeffIntCompressed;
     std::vector<size_t> compressedSizes;
 
-#ifdef USE_CUDA
-    if (use_gpu)
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+    if (use_nvcomp)
     {
 auto gpu_compress = [&](const std::vector<uint8_t>& input) -> std::vector<uint8_t>
 {
@@ -732,6 +746,7 @@ auto gpu_compress = [&](const std::vector<uint8_t>& input) -> std::vector<uint8_
     return output;
 };
 
+        std::cout << "[GAE Coeff Compression] NVCOMP ZSTD is used\n";
         processMaskCompressed = gpu_compress(processMaskBytes);
         processMaskBytes.clear();
         processMaskBytes.shrink_to_fit();
@@ -752,8 +767,9 @@ auto gpu_compress = [&](const std::vector<uint8_t>& input) -> std::vector<uint8_
     }
 #endif
 
-    if (!use_gpu)
+    if (!use_nvcomp)
     {
+        std::cout << "[GAE Coeff Compression] CPU ZSTD is used\n";
         size_t processMaskBound = ZSTD_compressBound(processMaskBytes.size());
         processMaskCompressed.resize(processMaskBound);
         size_t processMaskCompSize = ZSTD_compress(
@@ -844,12 +860,14 @@ MainData PCACompressor::decompressLossless(
         compressedSizes[i] = size;
     }
 
-    bool use_gpu = false;
-#ifdef USE_CUDA
-    use_gpu = device_.is_cuda();
+    //** JL modified **//
+    // ZSTD is on GPU only if nvcomp is enabled
+    bool use_nvcomp = false;
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+    use_nvcomp = device_.is_cuda();
 #endif
 
-#ifdef USE_CUDA
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
 
     auto gpu_decompress = [&](const uint8_t* comp_ptr , size_t comp_size , size_t decomp_size) -> std::vector<uint8_t>
         {
@@ -1095,8 +1113,9 @@ if (num_chunks > 1) {
     size_t processMaskOrigSize = (metaData.nVec + 7) / 8;
     std::vector<uint8_t> processMaskVec(processMaskOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+        std::cout << "[GAE Coeff Decompression] NVCOMP ZSTD is used\n";
         processMaskVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[0] ,
@@ -1104,6 +1123,7 @@ if (num_chunks > 1) {
 #endif
     }
     else {
+        std::cout << "[GAE Coeff Decompression] CPU ZSTD is used\n";
         size_t sz = ZSTD_decompress(
             processMaskVec.data() , processMaskVec.size() ,
             compressedData.data.data() + offset , compressedSizes[0]);
@@ -1116,8 +1136,8 @@ if (num_chunks > 1) {
     size_t prefixMaskOrigSize = (metaData.prefixLength + 7) / 8;
     std::vector<uint8_t> prefixMaskVec(prefixMaskOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         prefixMaskVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[1] ,
@@ -1137,8 +1157,8 @@ if (num_chunks > 1) {
     int64_t numVecsProcessed = torch::sum(mainData.processMask).item<int64_t>();
     std::vector<uint8_t> maskLengthVec(numVecsProcessed);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         maskLengthVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[2] ,
@@ -1175,8 +1195,8 @@ if (num_chunks > 1) {
     size_t coeffIntOrigSize = compressedData.coeffIntBytes;
     std::vector<uint8_t> coeffIntVec(coeffIntOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         coeffIntVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[3] ,
@@ -1222,13 +1242,15 @@ torch::Tensor PCACompressor::deserializeTensor(const std::vector<uint8_t>& bytes
     return tensor;
 }
 
+//** JL modified **/
 #ifdef USE_CUDA
 void PCACompressor::cleanupGPUMemory() {
-#ifdef USE_CUDA
     if (device_.is_cuda()) {
-        c10::cuda::CUDACachingAllocator::emptyCache();
+        #if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+            c10::hip::HIPCachingAllocator::emptyCache();
+        #else
+            c10::cuda::CUDACachingAllocator::emptyCache();
+        #endif
     }
-#else
-#endif
 }
 #endif

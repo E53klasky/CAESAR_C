@@ -192,11 +192,20 @@ torch::Tensor Decompressor::decompress(
 
 
         std::vector<int32_t> hyper_size = { (int32_t)cur_latents, 64, 4, 4 };
-        torch::Tensor hyper_index_tensor = build_indexes_tensor(hyper_size);
-        torch::Tensor decoded_hyper_latents = torch::zeros({ (long)cur_latents, 64, 4, 4 }).to(torch::kInt32);
+        //** JL modified **//
+        torch::Tensor hyper_index_tensor = build_indexes_tensor(hyper_size).contiguous();        
+        //const int32_t* h_idx_ptr = hyper_index_tensor.data_ptr<int32_t>();
+        //int64_t h_idx_stride = hyper_index_tensor.size(1) * hyper_index_tensor.size(2) * hyper_index_tensor.size(3);
+        
+        torch::Tensor decoded_hyper_latents = torch::zeros({ (long)cur_latents, 64, 4, 4 }).to(torch::kInt32); // cpu
+        //int32_t* h_out_ptr = decoded_hyper_latents.data_ptr<int32_t>();
+        //int64_t h_out_stride = h_idx_stride;
 
         for (size_t i = 0; i < cur_latents; i++) {
             std::vector<int32_t> hyper_index_vec = tensor_to_vector<int32_t>(hyper_index_tensor.select(0 , (long)i).reshape(-1));
+            //const int32_t* row_h_idx_start = h_idx_ptr + (i * h_idx_stride);
+            //std::vector<int32_t> hyper_index_vec(row_h_idx_start, row_h_idx_start + h_idx_stride);
+            
             std::vector<int32_t> hyper_decoded = range_decoder.decode_with_indexes(
                 encoded_hyper_latents[lat_start + i] ,
                 hyper_index_vec ,
@@ -206,15 +215,29 @@ torch::Tensor Decompressor::decompress(
             );
             torch::Tensor hyper_tensor = torch::tensor(hyper_decoded).reshape({ 64, 4, 4 });
             decoded_hyper_latents.select(0 , (long)i).copy_(hyper_tensor);
+            
+            // Copy decoded vector to tensor memory directly
+            //int32_t* row_h_out_start = h_out_ptr + (i * h_out_stride);
+            //std::memcpy(row_h_out_start, hyper_decoded.data(), hyper_decoded.size() * sizeof(int32_t));
         }
 
-        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kDouble).to(device_) });
+        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kFloat32).to(device_) });
         torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
         torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
+        // ** JL modified **//
+        torch::Tensor latent_indexes_cpu = latent_indexes_recon.cpu().contiguous();
+        //const int32_t* l_idx_ptr = latent_indexes_cpu.data_ptr<int32_t>();
+        //int64_t l_idx_stride = latent_indexes_cpu.stride(0);
 
         torch::Tensor decoded_latents_before_offset = torch::zeros({ (long)cur_latents, 64, 16, 16 }).to(torch::kInt32);
+        //int32_t* l_out_ptr = decoded_latents_before_offset.data_ptr<int32_t>();
+        //int64_t l_out_stride = 64 * 16 * 16;
+        
         for (size_t i = 0; i < cur_latents; i++) {
             std::vector<int32_t> latent_index = tensor_to_vector<int32_t>(latent_indexes_recon.select(0 , (long)i).reshape(-1));
+            //const int32_t* row_l_idx_start = l_idx_ptr + (i * l_idx_stride);
+            //std::vector<int32_t> latent_index(row_l_idx_start, row_l_idx_start + l_idx_stride);
+            
             std::vector<int32_t> latent_decoded = range_decoder.decode_with_indexes(
                 encoded_latents[lat_start + i] ,
                 latent_index ,
@@ -224,9 +247,16 @@ torch::Tensor Decompressor::decompress(
             );
             torch::Tensor latent_tensor = torch::tensor(latent_decoded).reshape({ 64, 16, 16 });
             decoded_latents_before_offset.select(0 , (long)i).copy_(latent_tensor);
+            
+            // Copy decoded vector to tensor memory directly
+            //int32_t* row_l_out_start = l_out_ptr + (i * l_out_stride);
+            //std::memcpy(row_l_out_start, latent_decoded.data(), latent_decoded.size() * sizeof(int32_t));
         }
 
-
+        //std::cout << "[DEBUG] decoded_hyper_latents Max (float): " << decoded_hyper_latents.max().item<float>() << std::endl;
+        //std::cout << "[DEBUG] decoded_hyper_latents Min (float): " << decoded_hyper_latents.min().item<float>() << std::endl;
+        //std::cout << "[DEBUG] decoded_latents_before_offset Max (float): " << decoded_latents_before_offset.max().item<float>() << std::endl;
+        //std::cout << "[DEBUG] decoded_latents_before_offset Min (float): " << decoded_latents_before_offset.min().item<float>() << std::endl;
         torch::Tensor q_latent_with_offset = decoded_latents_before_offset.to(torch::kFloat32).to(device_) + mean;
         auto decoded_latents_sizes = q_latent_with_offset.sizes();
         std::vector<int64_t> new_shape = { -1, 2 };

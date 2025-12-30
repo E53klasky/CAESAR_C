@@ -165,13 +165,13 @@ size_t calculate_metadata_size(const CompressionResult& result) {
 int main() {
     try {
         // keep shape for cpu ci test 1,1,20,256,256 
-        const std::vector<int64_t> shape = {1, 1, 20, 256, 256};
+        const std::vector<int64_t> shape = {1, 128, 128, 256, 256};
         const std::string raw_path = "TCf48.bin.f32";
         const std::string out_dir = "./output/";
 
         std::filesystem::create_directories(out_dir);
 
-        const int batch_size = 64;
+        const int batch_size = 128;
         const int n_frame = 8;
         torch::Tensor raw = loadRawBinary(raw_path, shape);
 
@@ -193,8 +193,8 @@ int main() {
         }
 
    
-        torch::Device compression_device = torch::Device(torch::kCPU);
-        torch::Device decompression_device = torch::Device(torch::kCPU);
+        torch::Device compression_device = torch::Device(torch::kCUDA);
+        torch::Device decompression_device = torch::Device(torch::kCUDA);
 
         std::cout << "\n===== COMPRESSION =====\n";
         Compressor compressor(compression_device);
@@ -214,7 +214,7 @@ int main() {
         config.test_size = {256, 256};
         config.augment_type = {};
 
-        float rel_eb = 0.1f;
+        float rel_eb = 0.001f;
         auto start_timeC = std::chrono::high_resolution_clock::now();
         CompressionResult comp = compressor.compress(config, batch_size, rel_eb);
         auto end_timeC = std::chrono::high_resolution_clock::now();

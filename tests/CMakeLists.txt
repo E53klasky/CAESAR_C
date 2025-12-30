@@ -15,11 +15,18 @@ else()
     set(FILESYSTEM_LIB "")
 endif()
 
+# GPU Detection Logic (Modified for Hybrid Support)
+## Frontier(HIP) 또는 NVIDIA(CUDA) detect
+if(TORCH_CUDA_ARCH_LIST OR CUDA_FOUND OR HIP_FOUND)
+    set(USE_CUDA ON)
+    message(STATUS "Tests: GPU Support Enabled")
+else()
+    set(USE_CUDA OFF)
+    message(STATUS "Tests: GPU Support Disabled (CPU Only)")
+endif()
 
-find_package(CUDA)
-set(USE_CUDA OFF)
-
-if(CUDA_FOUND)
+set(NVCOMP_FOUND OFF)
+if(USE_CUDA)
     find_path(NVCOMP_INCLUDE_DIR
         NAMES nvcomp.h nvcomp/nvcomp.h
         HINTS ENV NVCOMP_ROOT ENV NVCOMP_DIR
@@ -33,11 +40,12 @@ if(CUDA_FOUND)
     )
 
     if(NVCOMP_INCLUDE_DIR AND NVCOMP_LIBRARY)
-        set(USE_CUDA ON)
-        message(STATUS "CUDA + nvcomp found for tests")
+        set(NVCOMP_FOUND TRUE)
+        message(STATUS "Tests: CUDA + nvcomp found")
+    else()
+        message(STATUS "Tests: nvcomp NOT found (Hybrid/AMD Mode)")
     endif()
 endif()
-
 
 add_executable(test_dataset testDataSet.cpp)
 target_link_libraries(test_dataset PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
@@ -65,8 +73,26 @@ target_link_libraries(test_runGaeCuda PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${
 
 if(USE_CUDA)
     target_compile_definitions(test_runGaeCuda PRIVATE USE_CUDA)
-    target_include_directories(test_runGaeCuda PRIVATE ${NVCOMP_INCLUDE_DIR} ${CUDA_INCLUDE_DIRS})
-    message(STATUS "Building test_runGaeCuda with CUDA and NVCOMP support")
+    
+    if(NVCOMP_FOUND)
+        target_compile_definitions(test_runGaeCuda PRIVATE ENABLE_NVCOMP)
+        target_include_directories(test_runGaeCuda PRIVATE ${NVCOMP_INCLUDE_DIR})
+    endif()
+
+    if(HIP_FOUND)
+        target_compile_definitions(test_runGaeCuda PRIVATE USE_ROCM)
+        if(DEFINED ENV{ROCM_PATH})
+            target_include_directories(test_runGaeCuda PRIVATE $ENV{ROCM_PATH}/include)
+        elseif(EXISTS "/opt/rocm/include")
+            target_include_directories(test_runGaeCuda PRIVATE "/opt/rocm/include")
+        endif()
+    endif()
+
+    if(CUDA_FOUND)
+        target_include_directories(test_runGaeCuda PRIVATE ${CUDA_INCLUDE_DIRS})
+    endif()
+
+    message(STATUS "Building test_runGaeCuda with GPU support")
 else()
     message(STATUS "Building test_runGaeCuda in CPU-only mode")
 endif()
