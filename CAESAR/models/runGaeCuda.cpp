@@ -1,7 +1,6 @@
 #include "runGaeCuda.h"
 
 #ifdef USE_CUDA
-    // Error Check Macro for CUDA/HIP
 #if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
 #define CHECK_CUDA(cmd) do { \
           hipError_t e = (cmd); \
@@ -293,7 +292,6 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         }
     }
 
-    // remove true if you notice race condition
     torch::Tensor originalDataDevice = originalData.device() == device_
         ? originalData
         : originalData.to(device_ , true);
@@ -314,10 +312,9 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     torch::Tensor norms = torch::linalg_norm(residualPca , c10::nullopt , { 1 });
 
-    // Initialize MainData early - ONLY ONCE
     MainData mainData;
     mainData.processMask = norms > errorBound_;
-    norms = torch::Tensor();  // Clear immediately
+    norms = torch::Tensor();
 
     if (torch::sum(mainData.processMask).item<int64_t>() <= 0) {
         MetaData metaData;
@@ -339,7 +336,7 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     auto indices = torch::nonzero(mainData.processMask).squeeze(1);
     residualPca = torch::index_select(residualPca , 0 , indices);
-    indices = torch::Tensor();  // Clear
+    indices = torch::Tensor();
 
     PCA pca(-1 , device_.str());
     pca.fit(residualPca);
@@ -395,7 +392,7 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     torch::Tensor allCoeffSorted = torch::gather(allCoeff , 1 , sortIndex);
     torch::Tensor quanCoeffSorted = torch::round(allCoeffSorted / quanBin_) * quanBin_;
     torch::Tensor resCoeffSorted = allCoeffSorted - quanCoeffSorted;
-    allCoeffSorted = torch::Tensor();  // Clear immediately
+    allCoeffSorted = torch::Tensor();
 
     torch::Tensor tmp = resCoeffSorted.pow(2);
     torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower , 1 , sortIndex) - tmp;
@@ -493,18 +490,15 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     remap = torch::Tensor();
     all_inverses = torch::Tensor();
 
-    // Store coeffInt directly in mainData (no intermediate variable)
     mainData.coeffInt = inverseIndices;
-    // DO NOT CLEAR mainData.coeffInt - it's needed later!
+
 #ifdef USE_CUDA
     cleanupGPUMemory();
 #endif
 
-    // Store prefixMask and maskLength directly in mainData
     auto prefixResult = indexMaskPrefix(mask);
     mainData.prefixMask = prefixResult.first;
     mainData.maskLength = prefixResult.second;
-    // DO NOT CLEAR mainData members - they're needed for compressLossless!
 
     mask = torch::Tensor();
 #ifdef USE_CUDA
@@ -598,8 +592,6 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
 
     const int compressionLevel = 21;
 
-    //** JL modified **//
-    // ZSTD is on GPU only if nvcomp is enabled
     bool use_nvcomp = false;
 #if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
     use_nvcomp = device_.is_cuda();
