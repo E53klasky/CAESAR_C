@@ -208,6 +208,7 @@ torch::Tensor Decompressor::decompress(
         }
 
         std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kDouble).to(device_) });
+        torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
 
         torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
 
@@ -245,7 +246,6 @@ torch::Tensor Decompressor::decompress(
         torch::Tensor batched_scales = scales_tensor.narrow(0 , (long)sample_start , (long)cur_samples)
             .view({ -1, 1, 1, 1, 1 });
         torch::Tensor denorm_output = norm_output * batched_scales + batched_offsets;
-
 
         torch::Tensor indexes_cpu = indexes_tensor.narrow(0 , (long)sample_start , (long)cur_samples).to(torch::kCPU);
         for (int64_t i = 0; i < (int64_t)cur_samples; ++i) {
