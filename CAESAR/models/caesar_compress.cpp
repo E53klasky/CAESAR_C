@@ -382,7 +382,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             outputs.clear();
             outputs.shrink_to_fit();
 
-            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kFloat32) });
+            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kDouble) });
             torch::Tensor mean = hyper_outputs[0];
             torch::Tensor latent_indexes_recon = hyper_outputs[1];
             hyper_outputs.clear();

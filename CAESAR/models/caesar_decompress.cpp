@@ -122,7 +122,6 @@ torch::Tensor Decompressor::reshape_batch_2d_3d(const torch::Tensor& batch_data 
     return permuted_data;
 }
 
-
 torch::Tensor Decompressor::decompress(
     const std::vector<std::string>& encoded_latents ,
     const std::vector<std::string>& encoded_hyper_latents ,
@@ -161,17 +160,15 @@ torch::Tensor Decompressor::decompress(
     flat_indexes.clear();
     flat_indexes.shrink_to_fit();
 
-
-
-    if (indexes_tensor.numel() > 0) {  // 判断是否为空
+    if (indexes_tensor.numel() > 0) {
         std::cout << "[DEBUG] indexes_tensor shape: " << indexes_tensor.sizes() << std::endl;
 
-        int64_t rows_to_print = std::min((int64_t)3 , indexes_tensor.size(0)); // 第0维行数
-        int64_t cols = indexes_tensor.size(1);                                // 第1维列数
+        int64_t rows_to_print = std::min((int64_t)3 , indexes_tensor.size(0));
+        int64_t cols = indexes_tensor.size(1);
 
         for (int64_t i = 0; i < rows_to_print; ++i) {
             auto row = indexes_tensor[i];
-            auto row_cpu = row.to(torch::kCPU); // 如果在CUDA上，先拷贝回来
+            auto row_cpu = row.to(torch::kCPU);
             auto acc = row_cpu.accessor<int32_t , 1>();
             for (int64_t j = 0; j < cols; ++j) {
                 std::cout << acc[j] << " ";
@@ -189,7 +186,6 @@ torch::Tensor Decompressor::decompress(
         TORCH_CHECK(cur_latents % 2 == 0 , "cur_latents must be even.");
         size_t cur_samples = cur_latents / 2;
         size_t sample_start = lat_start / 2;
-
 
         std::vector<int32_t> hyper_size = { (int32_t)cur_latents, 64, 4, 4 };
 
@@ -211,12 +207,11 @@ torch::Tensor Decompressor::decompress(
             decoded_hyper_latents.select(0 , (long)i).copy_(hyper_tensor);
         }
 
-        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kFloat32).to(device_) });
-        torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
+        std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ decoded_hyper_latents.to(torch::kDouble).to(device_) });
+
         torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
 
         torch::Tensor latent_indexes_cpu = latent_indexes_recon.cpu().contiguous();
-
 
         torch::Tensor decoded_latents_before_offset = torch::zeros({ (long)cur_latents, 64, 16, 16 }).to(torch::kInt32);
 
@@ -232,7 +227,6 @@ torch::Tensor Decompressor::decompress(
             );
             torch::Tensor latent_tensor = torch::tensor(latent_decoded).reshape({ 64, 16, 16 });
             decoded_latents_before_offset.select(0 , (long)i).copy_(latent_tensor);
-
         }
 
         torch::Tensor q_latent_with_offset = decoded_latents_before_offset.to(torch::kFloat32).to(device_) + mean;
@@ -269,7 +263,6 @@ torch::Tensor Decompressor::decompress(
         result.num_samples += cur_samples;
         result.num_batches++;
     }
-
 
     auto [b1_i32 , b2_i32 , pad_i32] = meta.block_info;
 
