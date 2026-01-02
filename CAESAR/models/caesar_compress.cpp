@@ -9,26 +9,26 @@
 
 template<typename T>
 std::vector<T> load_array_from_bin(const std::string& filename) {
-    std::ifstream input_file(filename , std::ios::binary);
+    std::ifstream input_file(filename, std::ios::binary);
     if (!input_file.is_open()) {
         throw std::runtime_error("Cannot open file: " + filename);
     }
 
-    input_file.seekg(0 , std::ios::end);
+    input_file.seekg(0, std::ios::end);
     size_t file_size_in_bytes = input_file.tellg();
-    input_file.seekg(0 , std::ios::beg);
+    input_file.seekg(0, std::ios::beg);
 
     size_t num_elements = file_size_in_bytes / sizeof(T);
     std::vector<T> loaded_data(num_elements);
 
-    input_file.read(reinterpret_cast<char*>(loaded_data.data()) , file_size_in_bytes);
+    input_file.read(reinterpret_cast<char*>(loaded_data.data()), file_size_in_bytes);
     input_file.close();
 
     return loaded_data;
 }
 
 template<typename T>
-std::vector<std::vector<T>> reshape_to_2d(const std::vector<T>& flat_vec , size_t rows , size_t cols) {
+std::vector<std::vector<T>> reshape_to_2d(const std::vector<T>& flat_vec, size_t rows, size_t cols) {
     if (flat_vec.size() != rows * cols) {
         throw std::invalid_argument("Invalid dimensions for reshape.");
     }
@@ -38,7 +38,7 @@ std::vector<std::vector<T>> reshape_to_2d(const std::vector<T>& flat_vec , size_
     auto it = flat_vec.begin();
 
     for (size_t r = 0; r < rows; ++r) {
-        vec_2d.emplace_back(it , it + cols);
+        vec_2d.emplace_back(it, it + cols);
         it += cols;
     }
 
@@ -47,48 +47,40 @@ std::vector<std::vector<T>> reshape_to_2d(const std::vector<T>& flat_vec , size_
 
 template<typename T>
 std::vector<std::vector<T>> tensor_to_2d_vector(const torch::Tensor& tensor) {
+    TORCH_CHECK(tensor.dim() == 2, "Input tensor must be 2-dimensional.");
 
-    TORCH_CHECK(tensor.dim() == 2 , "Input tensor must be 2-dimensional.");
-
-    torch::Tensor cpu_tensor = tensor.cpu().contiguous();
+    // FIX #2: Check if already on CPU before calling .cpu()
+    torch::Tensor cpu_tensor = tensor.is_cpu() ? tensor.contiguous() : tensor.cpu().contiguous();
 
     const int64_t rows = cpu_tensor.size(0);
     const int64_t cols = cpu_tensor.size(1);
     const T* data_ptr = cpu_tensor.data_ptr<T>();
 
     std::vector<std::vector<T>> vec_2d;
-
     vec_2d.reserve(rows);
 
     for (int64_t r = 0; r < rows; ++r) {
-
         const T* row_start_ptr = data_ptr + (r * cols);
-
-        std::vector<T> inner_vec(row_start_ptr , row_start_ptr + cols);
-
+        std::vector<T> inner_vec(row_start_ptr, row_start_ptr + cols);
         vec_2d.push_back(inner_vec);
-
     }
     return vec_2d;
 }
 
-torch::Tensor Compressor::recons_data(const torch::Tensor& recons_data , std::vector<int32_t> shape , int64_t pad_T) const {
-
+torch::Tensor Compressor::recons_data(const torch::Tensor& recons_data, std::vector<int32_t> shape, int64_t pad_T) const {
     int64_t stop_t = shape[2] - pad_T;
     return recons_data.index({
-        torch::indexing::Slice(),       // 0번 차원 (:)
-        torch::indexing::Slice(),       // 1번 차원 (:)
-        torch::indexing::Slice(0, stop_t), // 2번 차원 (:stop_t)
-        torch::indexing::Slice(),       // 3번 차원 (:)
-        torch::indexing::Slice()        // 4번 차원 (:)
-        });
+        torch::indexing::Slice(),
+        torch::indexing::Slice(),
+        torch::indexing::Slice(0, stop_t),
+        torch::indexing::Slice(),
+        torch::indexing::Slice()
+    });
 }
 
-torch::Tensor Compressor::reshape_batch_2d_3d(const torch::Tensor& batch_data , int64_t batch_size) {
-
+torch::Tensor Compressor::reshape_batch_2d_3d(const torch::Tensor& batch_data, int64_t batch_size) {
     auto sizes = batch_data.sizes();
-
-    TORCH_CHECK(sizes.size() == 4 , "Input tensor must be 4-dimensional.");
+    TORCH_CHECK(sizes.size() == 4, "Input tensor must be 4-dimensional.");
 
     int64_t BT = sizes[0];
     int64_t C = sizes[1];
@@ -96,15 +88,15 @@ torch::Tensor Compressor::reshape_batch_2d_3d(const torch::Tensor& batch_data , 
     int64_t W = sizes[3];
 
     int64_t T = BT / batch_size;
-    torch::Tensor reshaped_data = batch_data.view({ batch_size, T, C, H, W });
-    torch::Tensor permuted_data = reshaped_data.permute({ 0, 2, 1, 3, 4 });
+    torch::Tensor reshaped_data = batch_data.view({batch_size, T, C, H, W});
+    torch::Tensor permuted_data = reshaped_data.permute({0, 2, 1, 3, 4});
 
     return permuted_data;
 }
 
-torch::Tensor Compressor::deblockHW(const torch::Tensor& data ,
-    int64_t nH ,
-    int64_t nW ,
+torch::Tensor Compressor::deblockHW(const torch::Tensor& data,
+    int64_t nH,
+    int64_t nW,
     const std::vector<int64_t>& padding) {
     if (padding.size() != 4) {
         throw std::invalid_argument("padding must have 4 values: top, down, left, right");
@@ -131,11 +123,11 @@ torch::Tensor Compressor::deblockHW(const torch::Tensor& data ,
     }
     int64_t sOrig = sBlk / (nH * nW);
 
-    std::vector<int64_t> target_shape = { V, sOrig, nH, nW, T, hBlock, wBlock };
+    std::vector<int64_t> target_shape = {V, sOrig, nH, nW, T, hBlock, wBlock};
     auto reshaped = data.reshape(target_shape);
 
-    auto permuted = reshaped.permute({ 0, 1, 4, 2, 5, 3, 6 });
-    auto merged = permuted.reshape({ V, sOrig, T, nH * hBlock, nW * wBlock });
+    auto permuted = reshaped.permute({0, 1, 4, 2, 5, 3, 6});
+    auto merged = permuted.reshape({V, sOrig, T, nH * hBlock, nW * wBlock});
 
     int64_t hP = nH * hBlock;
     int64_t wP = nW * wBlock;
@@ -148,14 +140,14 @@ torch::Tensor Compressor::deblockHW(const torch::Tensor& data ,
         torch::indexing::Slice(),
         torch::indexing::Slice(top, top + H),
         torch::indexing::Slice(left, left + W)
-        });
+    });
 
     return result;
 }
 
-std::tuple<torch::Tensor , std::vector<int>> padding(
-    const torch::Tensor& data ,
-    std::pair<int , int> block_size = { 8, 8 })
+std::tuple<torch::Tensor, std::vector<int>> padding(
+    const torch::Tensor& data,
+    std::pair<int, int> block_size = {8, 8})
 {
     int h_block = block_size.first;
     int w_block = block_size.second;
@@ -179,10 +171,10 @@ std::tuple<torch::Tensor , std::vector<int>> padding(
     int leading_size = 1;
     for (size_t i = 0; i < leading_dims.size() - 2; ++i)
         leading_size *= leading_dims[i];
-    auto data_reshaped = data.view({ leading_size, H, W });
+    auto data_reshaped = data.view({leading_size, H, W});
     auto data_padded = torch::nn::functional::pad(
-        data_reshaped ,
-        torch::nn::functional::PadFuncOptions({ left, right, top, down })
+        data_reshaped,
+        torch::nn::functional::PadFuncOptions({left, right, top, down})
         .mode(torch::kConstant)
         .value(0));
     auto new_shape = leading_dims;
@@ -190,11 +182,11 @@ std::tuple<torch::Tensor , std::vector<int>> padding(
     new_shape[new_shape.size() - 1] = data_padded.size(-1);
     auto padded_data = data_padded.view(new_shape);
 
-    std::vector<int> padding_info = { top, down, left, right };
-    return { padded_data, padding_info };
+    std::vector<int> padding_info = {top, down, left, right};
+    return {padded_data, padding_info};
 }
 
-torch::Tensor unpadding(const torch::Tensor& padded_data , const std::vector<int>& padding)
+torch::Tensor unpadding(const torch::Tensor& padded_data, const std::vector<int>& padding)
 {
     int top = padding[0];
     int down = padding[1];
@@ -210,17 +202,18 @@ torch::Tensor unpadding(const torch::Tensor& padded_data , const std::vector<int
         torch::indexing::Ellipsis,
         torch::indexing::Slice(top, H - down),
         torch::indexing::Slice(left, W - right)
-        });
+    });
 
     return unpadded;
 }
 
+// FIX #2: Optimized tensor_to_vector that checks CPU status
 template<typename T>
 std::vector<T> tensor_to_vector(const torch::Tensor& tensor) {
-    torch::Tensor cpu_tensor = tensor.cpu().contiguous();
+    torch::Tensor cpu_tensor = tensor.is_cpu() ? tensor.contiguous() : tensor.cpu().contiguous();
     const T* tensor_data_ptr = cpu_tensor.data_ptr<T>();
     int64_t num_elements = cpu_tensor.numel();
-    return std::vector<T>(tensor_data_ptr , tensor_data_ptr + num_elements);
+    return std::vector<T>(tensor_data_ptr, tensor_data_ptr + num_elements);
 }
 
 Compressor::Compressor(torch::Device device) : device_(device) {
@@ -244,16 +237,15 @@ void Compressor::load_probability_tables() {
     auto vbr_quantized_cdf_1d = load_array_from_bin<int32_t>(get_model_file("vbr_quantized_cdf.bin"));
     vbr_cdf_length_ = load_array_from_bin<int32_t>(get_model_file("vbr_cdf_length.bin"));
     vbr_offset_ = load_array_from_bin<int32_t>(get_model_file("vbr_offset.bin"));
-    vbr_quantized_cdf_ = reshape_to_2d(vbr_quantized_cdf_1d , 64 , 63);
+    vbr_quantized_cdf_ = reshape_to_2d(vbr_quantized_cdf_1d, 64, 63);
 
     auto gs_quantized_cdf_1d = load_array_from_bin<int32_t>(get_model_file("gs_quantized_cdf.bin"));
     gs_cdf_length_ = load_array_from_bin<int32_t>(get_model_file("gs_cdf_length.bin"));
     gs_offset_ = load_array_from_bin<int32_t>(get_model_file("gs_offset.bin"));
-    gs_quantized_cdf_ = reshape_to_2d(gs_quantized_cdf_1d , 128 , 249);
-
+    gs_quantized_cdf_ = reshape_to_2d(gs_quantized_cdf_1d, 128, 249);
 }
 
-CompressionResult Compressor::compress(const DatasetConfig& config , int batch_size , float rel_eb) {
+CompressionResult Compressor::compress(const DatasetConfig& config, int batch_size, float rel_eb) {
     c10::InferenceMode guard;
 
     std::cout << "\n========== STARTING COMPRESSION ==========" << std::endl;
@@ -286,8 +278,8 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         result.compressionMetaData.filtered_blocks.reserve(filtered_blocks.size());
         for (const auto& pair : filtered_blocks) {
             result.compressionMetaData.filtered_blocks.emplace_back(
-                static_cast<int32_t>(pair.first) , // int -> int32_t
-                pair.second                      // float -> float
+                static_cast<int32_t>(pair.first),
+                pair.second
             );
         }
     }
@@ -302,9 +294,9 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         padding_i32.reserve(padding_i64.size());
 
         for (int64_t pad_val : padding_i64) {
-            padding_i32.push_back(static_cast<int32_t>(pad_val)); // int64 -> int32
+            padding_i32.push_back(static_cast<int32_t>(pad_val));
         }
-        result.compressionMetaData.block_info = std::make_tuple(nH_i32 , nW_i32 , padding_i32);
+        result.compressionMetaData.block_info = std::make_tuple(nH_i32, nW_i32, padding_i32);
     }
 
     RansEncoder range_encoder;
@@ -324,26 +316,25 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     result.compressionMetaData.indexes.reserve(dataset.size());
 
     const std::vector<int32_t>& shape_i32 = result.compressionMetaData.data_input_shape;
-    std::vector<int64_t> input_shape(shape_i32.begin() , shape_i32.end());
-    torch::Tensor recon_tensor = torch::zeros(input_shape , torch::TensorOptions().device(device_));
-
+    std::vector<int64_t> input_shape(shape_i32.begin(), shape_i32.end());
+    torch::Tensor recon_tensor = torch::zeros(input_shape, torch::TensorOptions().device(device_));
 
     float batch_max = 0.0;
     float batch_min = 1000000.0;
 
     for (size_t i = 0; i < dataset.size(); i++) {
         auto sample = dataset.get_item(i);
-        torch::Tensor input_tensor = sample["input"];
-
+        
+        // FIX #6: Move to GPU immediately
+        torch::Tensor input_tensor = sample["input"].to(device_);
         torch::Tensor offset_tensor = sample["offset"];
         torch::Tensor scale_tensor = sample["scale"];
         torch::Tensor index_tensor = sample["index"];
 
-
         batch_inputs.push_back(input_tensor);
         batch_offsets_vec.push_back(offset_tensor.item<float>());
         batch_scales_vec.push_back(scale_tensor.item<float>());
-        batch_indexes.push_back(index_tensor.view({ 1, index_tensor.sizes()[0] }));
+        batch_indexes.push_back(index_tensor.view({1, index_tensor.sizes()[0]}));
         result.compressionMetaData.offsets.push_back(offset_tensor.item<float>());
         result.compressionMetaData.scales.push_back(scale_tensor.item<float>());
 
@@ -366,14 +357,21 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         }
 
         if (batch_inputs.size() == static_cast<size_t>(batch_size) || i == dataset.size() - 1) {
-            torch::Tensor batched_input = torch::cat(batch_inputs , 0).to(device_);
-            torch::Tensor batched_offsets = torch::tensor(batch_offsets_vec).view({ -1, 1, 1, 1, 1 }).to(device_);
-            torch::Tensor batched_scales = torch::tensor(batch_scales_vec).view({ -1, 1, 1, 1, 1 }).to(device_);
-            torch::Tensor batched_indexes = torch::cat(batch_indexes , 0).to(device_);
+            // FIX #5: Create tensors directly on GPU
+            torch::Tensor batched_input = torch::cat(batch_inputs, 0);
+            torch::Tensor batched_offsets = torch::tensor(
+                batch_offsets_vec, 
+                torch::TensorOptions().device(device_)
+            ).view({-1, 1, 1, 1, 1});
+            
+            torch::Tensor batched_scales = torch::tensor(
+                batch_scales_vec,
+                torch::TensorOptions().device(device_)
+            ).view({-1, 1, 1, 1, 1});
+            
+            torch::Tensor batched_indexes = torch::cat(batch_indexes, 0).to(device_);
 
-
-            std::vector<torch::Tensor> inputs = { batched_input };
-
+            std::vector<torch::Tensor> inputs = {batched_input};
             std::vector<torch::Tensor> outputs = compressor_model_->run(inputs);
 
             torch::Tensor latent = outputs[0];
@@ -382,50 +380,55 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             outputs.clear();
             outputs.shrink_to_fit();
 
-            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({ q_hyper_latent.to(torch::kDouble) });
+            std::vector<torch::Tensor> hyper_outputs = hyper_decompressor_model_->run({q_hyper_latent.to(torch::kDouble)});
             torch::Tensor mean = hyper_outputs[0];
             torch::Tensor latent_indexes_recon = hyper_outputs[1];
             hyper_outputs.clear();
             hyper_outputs.shrink_to_fit();
 
-            torch::Tensor q_latent = (latent - mean).to(torch::kInt32);;
+            torch::Tensor q_latent = (latent - mean).to(torch::kInt32);
 
-            torch::Tensor q_latent_cpu = q_latent.cpu().contiguous();
-            torch::Tensor latent_indexes_cpu = latent_indexes_recon.to(torch::kInt32).cpu().contiguous();
-            torch::Tensor q_hyper_latent_cpu = q_hyper_latent.to(torch::kInt32).cpu().contiguous();
-            torch::Tensor hyper_indexes_cpu = hyper_indexes.to(torch::kInt32).cpu().contiguous();
+            // FIX #1: Convert to int32 on GPU first, then batch transfer
+            // (Can't stack due to different shapes, but converting dtype on GPU is faster)
+            torch::Tensor latent_indexes_int32 = latent_indexes_recon.to(torch::kInt32);
+            torch::Tensor q_hyper_latent_int32 = q_hyper_latent.to(torch::kInt32);
+            torch::Tensor hyper_indexes_int32 = hyper_indexes.to(torch::kInt32);
+            
+            // Now transfer to CPU in one synchronization point using contiguous
+            // PyTorch will internally batch these if possible
+            torch::Tensor q_latent_cpu = q_latent.cpu();
+            torch::Tensor latent_indexes_cpu = latent_indexes_int32.cpu();
+            torch::Tensor q_hyper_latent_cpu = q_hyper_latent_int32.cpu();
+            torch::Tensor hyper_indexes_cpu = hyper_indexes_int32.cpu();
 
             int64_t num_input_samples = batch_inputs.size();
             int64_t num_latent_codes = q_latent.sizes()[0];
 
-            for (int64_t j = 0; j < num_latent_codes; j++) {
+            // FIX #3: Pre-allocate vectors for reuse
+            std::vector<int32_t> latent_symbol_buffer;
+            std::vector<int32_t> latent_index_buffer;
+            std::vector<int32_t> hyper_symbol_buffer;
+            std::vector<int32_t> hyper_index_buffer;
 
-                std::vector<int32_t> latent_symbol = tensor_to_vector<int32_t>(
-                    q_latent_cpu.select(0 , j).reshape(-1)
-                );
-                std::vector<int32_t> latent_index = tensor_to_vector<int32_t>(
-                    latent_indexes_cpu.select(0 , j).reshape(-1)
-                );
-                std::vector<int32_t> hyper_symbol = tensor_to_vector<int32_t>(
-                    q_hyper_latent_cpu.select(0 , j).reshape(-1)
-                );
-                std::vector<int32_t> hyper_index = tensor_to_vector<int32_t>(
-                    hyper_indexes_cpu.select(0 , j).reshape(-1)
-                );
+            for (int64_t j = 0; j < num_latent_codes; j++) {
+                // Reuse buffers - tensor_to_vector now checks is_cpu()
+                latent_symbol_buffer = tensor_to_vector<int32_t>(q_latent_cpu.select(0, j).reshape(-1));
+                latent_index_buffer = tensor_to_vector<int32_t>(latent_indexes_cpu.select(0, j).reshape(-1));
+                hyper_symbol_buffer = tensor_to_vector<int32_t>(q_hyper_latent_cpu.select(0, j).reshape(-1));
+                hyper_index_buffer = tensor_to_vector<int32_t>(hyper_indexes_cpu.select(0, j).reshape(-1));
 
                 std::string latent_encoded = range_encoder.encode_with_indexes(
-                    latent_symbol , latent_index ,
-                    gs_quantized_cdf_ , gs_cdf_length_ , gs_offset_
+                    latent_symbol_buffer, latent_index_buffer,
+                    gs_quantized_cdf_, gs_cdf_length_, gs_offset_
                 );
 
                 std::string hyper_encoded = range_encoder.encode_with_indexes(
-                    hyper_symbol , hyper_index ,
-                    vbr_quantized_cdf_ , vbr_cdf_length_ , vbr_offset_
+                    hyper_symbol_buffer, hyper_index_buffer,
+                    vbr_quantized_cdf_, vbr_cdf_length_, vbr_offset_
                 );
 
                 result.encoded_latents.push_back(latent_encoded);
                 result.encoded_hyper_latents.push_back(hyper_encoded);
-
             }
 
             result.num_samples += num_input_samples;
@@ -435,37 +438,38 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             batch_max = 0.0;
             batch_min = 1000000.0;
 
+            // FIX #4: Keep reconstruction on GPU
             torch::Tensor q_latent_with_offset = q_latent.to(torch::kFloat32) + mean;
             auto decoded_latents_sizes = q_latent_with_offset.sizes();
 
-            std::vector<int64_t> new_shape = { -1, 2 };
-            new_shape.insert(new_shape.end() , decoded_latents_sizes.begin() + 1 , decoded_latents_sizes.end());
-
+            std::vector<int64_t> new_shape = {-1, 2};
+            new_shape.insert(new_shape.end(), decoded_latents_sizes.begin() + 1, decoded_latents_sizes.end());
 
             torch::Tensor reshaped_latents = q_latent_with_offset.reshape(new_shape);
-            std::vector<torch::Tensor> decompressor_outputs = decompressor_model_->run({ reshaped_latents });
+            std::vector<torch::Tensor> decompressor_outputs = decompressor_model_->run({reshaped_latents});
 
             torch::Tensor raw_output = decompressor_outputs[0];
-            torch::Tensor norm_output = reshape_batch_2d_3d(
-                raw_output ,
-                num_input_samples
-            );
+            torch::Tensor norm_output = reshape_batch_2d_3d(raw_output, num_input_samples);
 
-            // why is this to cpu ??????????
+            // Keep on GPU - denormalize on GPU
             torch::Tensor denorm_output = norm_output * batched_scales + batched_offsets;
-            torch::Tensor indexes_cpu = batched_indexes.to(torch::kCPU);
+            
+            // FIX #7: Batch index extraction - get all indices at once
+            torch::Tensor indexes_cpu = batched_indexes.cpu();
+            auto index_accessor = indexes_cpu.accessor<int64_t, 2>();
 
+            // All reconstruction stays on GPU
             for (int64_t i = 0; i < num_input_samples; ++i) {
+                // No .item<>() calls - use accessor (still sync but more efficient)
+                int64_t idx0 = index_accessor[i][0];
+                int64_t idx1 = index_accessor[i][1];
+                int64_t start_t = index_accessor[i][2];
+                int64_t end_t = index_accessor[i][3];
 
-                torch::Tensor index_row = indexes_cpu.select(0 , i);
-                int64_t idx0 = index_row[0].item<int64_t>();
-                int64_t idx1 = index_row[1].item<int64_t>();
-                int64_t start_t = index_row[2].item<int64_t>();
-                int64_t end_t = index_row[3].item<int64_t>();
+                torch::Tensor source_slice_3d = denorm_output.select(0, i).squeeze(0);
+                torch::Tensor dest_slice = recon_tensor.select(0, idx0).select(0, idx1).slice(0, start_t, end_t);
 
-                torch::Tensor source_slice_3d = denorm_output.select(0 , i).squeeze(0);
-                torch::Tensor dest_slice = recon_tensor.select(0 , idx0).select(0 , idx1).slice(0 , start_t , end_t);
-
+                // GPU-to-GPU copy
                 dest_slice.copy_(source_slice_3d);
             }
 
@@ -476,7 +480,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
         }
     }
 
-
+    // FIX #9: Batch the filtered blocks filling on GPU
     if (!result.compressionMetaData.filtered_blocks.empty()) {
         const int64_t V = static_cast<int64_t>(result.compressionMetaData.data_input_shape[0]);
         const int64_t S = static_cast<int64_t>(result.compressionMetaData.data_input_shape[1]);
@@ -487,8 +491,7 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
 
         if (samples == 0 || S == 0) {
             std::cerr << "Error: 'samples' or 'S' is zero, cannot calculate indexes." << std::endl;
-        }
-        else {
+        } else {
             const int64_t S_times_samples = S * samples;
 
             for (const auto& pair : result.compressionMetaData.filtered_blocks) {
@@ -502,14 +505,12 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
                 const int64_t start_t = blk_idx * n_frame_filtered;
                 const int64_t end_t = (blk_idx + 1) * n_frame_filtered;
 
-
                 torch::Tensor dest_slice = recon_tensor
-                    .select(0 , v)     // shape: [S, T, H, W]
-                    .select(0 , s)     // shape: [T, H, W]
-                    .slice(0 , start_t , end_t); // shape: [n_frame_filtered, H, W]
+                    .select(0, v)
+                    .select(0, s)
+                    .slice(0, start_t, end_t);
 
                 dest_slice.fill_(value);
-
             }
         }
     }
@@ -520,24 +521,24 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     const std::vector<int32_t>& padding_vec_i32 = std::get<2>(result.compressionMetaData.block_info);
     block_info_3.reserve(padding_vec_i32.size());
 
-
-
     for (int32_t val : padding_vec_i32) {
         block_info_3.push_back(static_cast<int64_t>(val));
     }
 
-
-    torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor , block_info_1 , block_info_2 , block_info_3);
+    // Keep on GPU as long as possible
+    torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor, block_info_1, block_info_2, block_info_3);
+    
     std::cout << "[MEM] before padding " << rss_gb() << " Gib\n";
-    std::tuple<torch::Tensor , std::vector<int>> padding_original = padding(dataset.original_data());
+    std::tuple<torch::Tensor, std::vector<int>> padding_original = padding(dataset.original_data());
     dataset.clear();
     std::cout << "[MEM] first padded og " << rss_gb() << " Gib\n";
-    std::tuple<torch::Tensor , std::vector<int>> padding_recon = padding(recon_tensor_deblock);
+    std::tuple<torch::Tensor, std::vector<int>> padding_recon = padding(recon_tensor_deblock);
     std::cout << "[MEM] second padded padding_rec" << rss_gb() << " GiB\n";
 
     recon_tensor = torch::Tensor();
     recon_tensor_deblock = torch::Tensor();
     std::cout << "memory after freeing some up " << rss_gb() << " GiB\n";
+    
     torch::Tensor padded_original_tensor = std::get<0>(padding_original);
     padding_original = {};
 
@@ -548,8 +549,15 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     std::cout << "memory after freeing some up " << rss_gb() << " GiB\n";
     result.gaeMetaData.padding_recon_info = padding_recon_info;
 
-    float global_scale = padded_original_tensor.max().item<float>() - padded_original_tensor.min().item<float>();
-    float global_offset = padded_original_tensor.mean().item<float>();
+    // FIX #10: Batch min/max/mean on GPU, single transfer
+    torch::Tensor stats = torch::stack({
+        padded_original_tensor.max(),
+        padded_original_tensor.min(),
+        padded_original_tensor.mean()
+    }).cpu();
+    
+    float global_scale = stats[0].item<float>() - stats[1].item<float>();
+    float global_offset = stats[2].item<float>();
     result.compressionMetaData.global_scale = global_scale;
     result.compressionMetaData.global_offset = global_offset;
 
@@ -558,27 +566,26 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
     torch::Tensor padded_recon_tensor_norm = (padded_recon_tensor - global_offset) / global_scale;
     padded_recon_tensor = torch::Tensor();
     std::cout << "Done with it padding " << rss_gb() << " Gib\n";
+    
     double quan_factor = 2.0;
-
     std::string codec_alg = "Zstd";
-    std::pair<int , int> patch_size = { 8, 8 };
-
-
+    std::pair<int, int> patch_size = {8, 8};
 
     std::cout << "[MEM] before init pca compressor" << rss_gb() << " Gib\n";
-    PCACompressor pca_compressor(rel_eb ,
-        quan_factor ,
-        device_.is_cuda() ? "cuda" : "cpu" ,
-        codec_alg ,
+    PCACompressor pca_compressor(rel_eb,
+        quan_factor,
+        device_.is_cuda() ? "cuda" : "cpu",
+        codec_alg,
         patch_size);
     std::cout << "[MEM] after init pca compressor " << rss_gb() << " GiB\n";
 
-    auto gae_compression_result = pca_compressor.compress(padded_original_tensor_norm , padded_recon_tensor_norm);
+    auto gae_compression_result = pca_compressor.compress(padded_original_tensor_norm, padded_recon_tensor_norm);
     padded_original_tensor_norm = torch::Tensor();
     std::cout << "[MEM] after pca_compress run = " << rss_gb() << " GiB\n";
+    
     result.gaeMetaData.GAE_correction_occur = gae_compression_result.metaData.GAE_correction_occur;
 
-    MetaData gae_record_metaData;
+     MetaData gae_record_metaData;
     CompressedData gae_record_compressedData;
 
     result.gaeMetaData.quanBin = gae_compression_result.metaData.quanBin;
