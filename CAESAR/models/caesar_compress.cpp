@@ -366,8 +366,19 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
 
             torch::Tensor batched_indexes = torch::cat(batch_indexes , 0).to(device_);
 
+            std::vector<torch::Tensor> inputs;
+            std::vector<torch::Tensor> outputs;
+
+#ifdef USE_CPU
+           inputs = { batched_input.to(torch::kFloat32)};
+            outputs = compressor_model_->run(inputs);
+#endif
+
+#ifdef USE_CUDA
             std::vector<torch::Tensor> inputs = { batched_input.to(torch::kFloat16) };
             std::vector<torch::Tensor> outputs = compressor_model_->run(inputs);
+#endif
+
 
             torch::Tensor latent = outputs[0];
             torch::Tensor q_hyper_latent = outputs[1];

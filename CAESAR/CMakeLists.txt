@@ -4,7 +4,6 @@ find_package(PkgConfig)
 find_package(Torch REQUIRED)
 find_package(OpenMP REQUIRED)
 
-# ZSTD Detection Logic
 if(PkgConfig_FOUND)
     pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
 endif()
@@ -58,6 +57,11 @@ if(USE_CUDA)
     endif()
 endif()
 
+if (NOT USE_CUDA)
+    set(USE_CPU ON)
+    message(STATUS ">>> CPU mode on")
+endif()
+
 set(CAESAR_SRC
     CAESAR.cpp
     dataset/dataset.cpp
@@ -84,6 +88,12 @@ if(USE_CUDA)
     endif()
 endif()
 
+
+if(USE_CPU)
+    target_compile_definitions(caesar_lib PUBLIC USE_CPU)
+    message(STATUS "Build defined with USE_CPU")
+endif()
+
 if(NVCOMP_FOUND)
     target_compile_definitions(caesar_lib PRIVATE ENABLE_NVCOMP)
     message(STATUS "Build defined with ENABLE_NVCOMP")
@@ -97,6 +107,7 @@ target_include_directories(caesar_lib
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/range_coder>
         $<INSTALL_INTERFACE:include/caesar>
 )
+
 
 target_link_libraries(caesar_lib PUBLIC zstd_target torch)
 
