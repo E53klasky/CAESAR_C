@@ -165,13 +165,13 @@ size_t calculate_metadata_size(const CompressionResult& result) {
 int main() {
     try {
         // keep shape for cpu ci test 1,1,20,256,256 
-        const std::vector<int64_t> shape = { 1, 256, 256, 256, 256 };
+        const std::vector<int64_t> shape = { 1, 1, 20, 256, 256 };
         const std::string raw_path = "TCf48.bin.f32";
         const std::string out_dir = "./output/";
 
         std::filesystem::create_directories(out_dir);
 
-        const int batch_size = 128;
+        const int batch_size = 64;
         const int n_frame = 8;
         torch::Tensor raw = loadRawBinary(raw_path , shape);
 
