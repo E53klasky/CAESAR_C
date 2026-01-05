@@ -101,8 +101,10 @@ torch::Tensor deblockHW(const torch::Tensor& data,
     return result;
 }
 
+
 std::tuple<torch::Tensor, std::tuple<int64_t, int64_t, std::vector<int64_t>>>
 blockHW(const torch::Tensor& data, std::pair<int64_t, int64_t> block_size) {
+
     int64_t hBlock = block_size.first;
     int64_t wBlock = block_size.second;
 
@@ -126,38 +128,27 @@ blockHW(const torch::Tensor& data, std::pair<int64_t, int64_t> block_size) {
     int64_t nW = W_target / wBlock;
 
     auto reshaped = data.view({V * S, T, H, W});
-    
-    auto original_device = data.device();
-    bool was_on_gpu = original_device.is_cuda();
-    
-    torch::Tensor padded;
-    if (was_on_gpu) {
-        auto reshaped_cpu = reshaped.cpu();
-        padded = torch::nn::functional::pad(
-            reshaped_cpu,
-            torch::nn::functional::PadFuncOptions({left, right, top, down}).mode(torch::kReflect)
-        );
-        padded = padded.to(original_device);
-    } else {
-        padded = torch::nn::functional::pad(
-            reshaped,
-            torch::nn::functional::PadFuncOptions({left, right, top, down}).mode(torch::kReflect)
-        );
-    }
+    auto device = data.device();
+    auto options = reshaped.options();
 
-    auto paddedSizes = padded.sizes();
-    int64_t H_p = paddedSizes[2];
-    int64_t W_p = paddedSizes[3];
-    auto restored = padded.view({V, S, T, H_p, W_p});
+    auto padded = torch::zeros({V * S, T, H_target, W_target}, options);
 
-    auto blocked = restored.reshape({V, S, T, nH, hBlock, nW, wBlock});
-    blocked = blocked.permute({0, 1, 3, 5, 2, 4, 6});
-    blocked = blocked.reshape({V, S * nH * nW, T, hBlock, wBlock});
+    padded.slice(2, top, top + H).slice(3, left, left + W).copy_(reshaped);
+
+    auto restored = padded.view({V, S, T, H_target, W_target});
+
+    auto blocked = restored.reshape({V, S, T, nH, hBlock, nW, wBlock})
+                           .permute({0, 1, 3, 5, 2, 4, 6})
+                           .reshape({V, S * nH * nW, T, hBlock, wBlock});
 
     std::vector<int64_t> padding = {top, down, left, right};
+
+    padded.reset();
+    reshaped.reset();
+    restored.reset();
+
     return {blocked, {nH, nW, padding}};
 }
-
 
 std::pair<std::vector<std::pair<int, float>>, std::vector<int>>
 data_filtering(const torch::Tensor& data, int nFrame, const torch::Device& device) {
@@ -271,30 +262,35 @@ torch::Tensor BaseDataset::apply_augments(torch::Tensor data) {
 }
 
 torch::Tensor BaseDataset::apply_padding_or_crop(torch::Tensor data) {
-    int cur_size = data.size(-1);
+    int cur_h = data.size(-2);
+    int cur_w = data.size(-1);
 
-    if (train_size > cur_size) {
-        int pad_size = train_size - cur_size;
-        int pad_left = pad_size / 2;
-        int pad_right = pad_size - pad_left;
+    if (train_size > cur_h || train_size > cur_w) {
+        int pad_h = train_size - cur_h;
+        int pad_w = train_size - cur_w;
 
-        auto original_device = data.device();
-        bool was_on_gpu = original_device.is_cuda();
-        
-        if (was_on_gpu) {
-            auto data_cpu = data.unsqueeze(0).cpu();
-            data = torch::nn::functional::pad(data_cpu,
-                torch::nn::functional::PadFuncOptions({pad_left, pad_right, pad_left, pad_right})
-                .mode(torch::kReflect)).squeeze(0);
-            data = data.to(original_device);
-        } else {
-            data = torch::nn::functional::pad(data.unsqueeze(0),
-                torch::nn::functional::PadFuncOptions({pad_left, pad_right, pad_left, pad_right})
-                .mode(torch::kReflect)).squeeze(0);
-        }
-    } else if (train_size < cur_size) {
-        int start_h = std::uniform_int_distribution<>(0, data.size(-2) - train_size)(rng_);
-        int start_w = std::uniform_int_distribution<>(0, data.size(-1) - train_size)(rng_);
+        int pad_top = pad_h / 2;
+        int pad_bottom = pad_h - pad_top;
+        int pad_left = pad_w / 2;
+        int pad_right = pad_w - pad_left;
+
+        auto device = data.device();
+        auto options = data.options();
+
+        torch::Tensor padded = torch::zeros(
+            {data.size(0), cur_h + pad_top + pad_bottom, cur_w + pad_left + pad_right},
+            options
+        );
+
+        padded.slice(-2, pad_top, pad_top + cur_h)
+              .slice(-1, pad_left, pad_left + cur_w)
+              .copy_(data);
+
+        data = padded; 
+    } 
+    else if (train_size < cur_h && train_size < cur_w) {
+        int start_h = std::uniform_int_distribution<>(0, cur_h - train_size)(rng_);
+        int start_w = std::uniform_int_distribution<>(0, cur_w - train_size)(rng_);
 
         data = data.index({
             torch::indexing::Slice(),
