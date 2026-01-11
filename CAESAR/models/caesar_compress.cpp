@@ -10,6 +10,92 @@
 #include <future>
 #include <algorithm>
 
+#ifdef __linux__
+#include <sched.h>
+#include <unistd.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#include <mach/thread_policy.h>
+#include <mach/thread_act.h>
+#include <pthread.h>
+#endif
+
+// Function to get actual allocated CPU cores
+int get_allocated_cores() {
+#ifdef __linux__
+    // Linux: Use CPU affinity
+    cpu_set_t cpu_set;
+    CPU_ZERO(&cpu_set);
+    
+    if (sched_getaffinity(0, sizeof(cpu_set), &cpu_set) == 0) {
+        int count = CPU_COUNT(&cpu_set);
+        if (count > 0) {
+            return count;
+        }
+    }
+    
+#elif defined(_WIN32)
+    // Windows: Get process affinity mask
+    DWORD_PTR process_mask, system_mask;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) {
+        int count = 0;
+        while (process_mask) {
+            count += (process_mask & 1);
+            process_mask >>= 1;
+        }
+        if (count > 0) {
+            return count;
+        }
+    }
+    
+#elif defined(__APPLE__)
+    // macOS: Try to get available CPUs from sysctl
+    int count = 0;
+    size_t count_len = sizeof(count);
+    
+    // First try hw.activecpu (respects CPU restrictions)
+    if (sysctlbyname("hw.activecpu", &count, &count_len, NULL, 0) == 0 && count > 0) {
+        return count;
+    }
+    
+    // Fallback to hw.ncpu
+    if (sysctlbyname("hw.ncpu", &count, &count_len, NULL, 0) == 0 && count > 0) {
+        return count;
+    }
+    
+    // Try thread affinity policy (for containerized environments)
+    thread_affinity_policy_data_t policy;
+    mach_msg_type_number_t policy_count = THREAD_AFFINITY_POLICY_COUNT;
+    boolean_t get_default = FALSE;
+    
+    if (thread_policy_get(mach_thread_self(), THREAD_AFFINITY_POLICY,
+                         (thread_policy_t)&policy, &policy_count, &get_default) == KERN_SUCCESS) {
+        if (policy.affinity_tag > 0) {
+            return policy.affinity_tag;
+        }
+    }
+#endif
+    
+    // Fallback to hardware concurrency for all platforms
+    return std::thread::hardware_concurrency();
+}
+
+// Get optimal thread count based on allocation
+int get_optimal_thread_count(int64_t num_tasks) {
+    int allocated_cores = get_allocated_cores();
+    
+    // Use 80% of allocated cores to leave room for system tasks
+    int optimal = static_cast<int>(allocated_cores * 0.8);
+    
+    // Ensure at least 1 thread and don't exceed number of tasks
+    optimal = std::max(1, std::min(optimal, static_cast<int>(num_tasks)));
+    
+    return optimal;
+}
+
 template<typename T>
 std::vector<T> load_array_from_bin(const std::string& filename) {
     std::ifstream input_file(filename , std::ios::binary);
@@ -216,14 +302,14 @@ std::vector<T> tensor_to_vector(const torch::Tensor& tensor) {
     return std::vector<T>(tensor_data_ptr , tensor_data_ptr + num_elements);
 }
 
-
+// Structure for encoding results
 struct EncodingResult {
     int64_t idx;
     std::string latent_encoded;
     std::string hyper_encoded;
 };
 
-
+// Worker function for parallel encoding
 EncodingResult encode_worker(
     int64_t idx,
     const torch::Tensor& q_latent_slice,
@@ -240,8 +326,10 @@ EncodingResult encode_worker(
     EncodingResult result;
     result.idx = idx;
     
+    // Each thread gets its own encoder
     RansEncoder thread_encoder;
     
+    // Convert tensors to vectors
     std::vector<int32_t> latent_symbol_buffer = 
         tensor_to_vector<int32_t>(q_latent_slice.reshape(-1));
     std::vector<int32_t> latent_index_buffer = 
@@ -251,6 +339,7 @@ EncodingResult encode_worker(
     std::vector<int32_t> hyper_index_buffer = 
         tensor_to_vector<int32_t>(hyper_indexes_slice.reshape(-1));
     
+    // Encode
     result.latent_encoded = thread_encoder.encode_with_indexes(
         latent_symbol_buffer, latent_index_buffer,
         gs_quantized_cdf, gs_cdf_length, gs_offset
@@ -439,67 +528,86 @@ CompressionResult Compressor::compress(const DatasetConfig& config , int batch_s
             torch::Tensor q_hyper_latent_int32 = q_hyper_latent.to(torch::kInt32);
             torch::Tensor hyper_indexes_int32 = hyper_indexes.to(torch::kInt32);
 
-            // Move tensors to CPU once (outside the parallel loop)
-            torch::Tensor q_latent_cpu = q_latent.cpu();
-            torch::Tensor latent_indexes_cpu = latent_indexes_int32.cpu();
-            torch::Tensor q_hyper_latent_cpu = q_hyper_latent_int32.cpu();
-            torch::Tensor hyper_indexes_cpu = hyper_indexes_int32.cpu();
-
             int64_t num_input_samples = batch_inputs.size();
             int64_t num_latent_codes = q_latent.sizes()[0];
 
-            int hw_threads = std::thread::hardware_concurrency();
-            int optimal_threads = std::min({
-                hw_threads / 2, 
-                32,            
-                static_cast<int>(num_latent_codes)  // Don't exceed number of tasks
-            });
+            // Get optimal thread count based on actual CPU allocation
+            int optimal_threads = get_optimal_thread_count(num_latent_codes);
             
-            optimal_threads = std::max(1, optimal_threads);
-            
+            // Only print on first batch to reduce console spam
             static bool first_batch = true;
             if (first_batch) {
-                std::cout << "Range encoding using " << optimal_threads 
-                          << " threads (detected " << hw_threads << " hardware threads)" << std::endl;
+                int allocated = get_allocated_cores();
+                std::cout << "\n[Threading Info]" << std::endl;
+                std::cout << "  Hardware threads detected: " << std::thread::hardware_concurrency() << std::endl;
+                std::cout << "  Allocated CPU cores: " << allocated << std::endl;
+                std::cout << "  Using threads for encoding: " << optimal_threads << std::endl;
                 first_batch = false;
             }
 
-            std::vector<std::future<EncodingResult>> futures;
-            futures.reserve(num_latent_codes);
+            // OPTIMIZATION 1: Use pinned memory for faster CPU transfer
+            torch::Tensor q_latent_cpu = q_latent.to(torch::kCPU, /*non_blocking=*/false, /*copy=*/true).pin_memory();
+            torch::Tensor latent_indexes_cpu = latent_indexes_int32.to(torch::kCPU, /*non_blocking=*/false, /*copy=*/true).pin_memory();
+            torch::Tensor q_hyper_latent_cpu = q_hyper_latent_int32.to(torch::kCPU, /*non_blocking=*/false, /*copy=*/true).pin_memory();
+            torch::Tensor hyper_indexes_cpu = hyper_indexes_int32.to(torch::kCPU, /*non_blocking=*/false, /*copy=*/true).pin_memory();
 
-            for (int64_t j = 0; j < num_latent_codes; j++) {
-                futures.push_back(std::async(std::launch::async, [&, j]() {
-                    return encode_worker(
-                        j,
-                        q_latent_cpu.select(0, j),
-                        latent_indexes_cpu.select(0, j),
-                        q_hyper_latent_cpu.select(0, j),
-                        hyper_indexes_cpu.select(0, j),
-                        gs_quantized_cdf_,
-                        gs_cdf_length_,
-                        gs_offset_,
-                        vbr_quantized_cdf_,
-                        vbr_cdf_length_,
-                        vbr_offset_
-                    );
+            // OPTIMIZATION 2: Pre-allocate result vectors to avoid reallocation
+            std::vector<EncodingResult> encoding_results(num_latent_codes);
+
+            // OPTIMIZATION 3: Use batch processing with thread pool to reduce overhead
+            const int64_t codes_per_thread = std::max(int64_t(1), num_latent_codes / optimal_threads);
+            
+            std::vector<std::future<void>> futures;
+            futures.reserve(optimal_threads);
+
+            // Process in batches per thread
+            for (int t = 0; t < optimal_threads; ++t) {
+                int64_t start_idx = t * codes_per_thread;
+                int64_t end_idx = (t == optimal_threads - 1) ? num_latent_codes : (t + 1) * codes_per_thread;
+                
+                if (start_idx >= num_latent_codes) break;
+
+                futures.push_back(std::async(std::launch::async, [&, t, start_idx, end_idx]() {
+                    // Each thread gets its own encoder (reused across multiple codes)
+                    RansEncoder thread_encoder;
+                    
+                    for (int64_t j = start_idx; j < end_idx; ++j) {
+                        EncodingResult& result = encoding_results[j];
+                        result.idx = j;
+                        
+                        // Convert tensors to vectors
+                        std::vector<int32_t> latent_symbol_buffer = 
+                            tensor_to_vector<int32_t>(q_latent_cpu.select(0, j).reshape(-1));
+                        std::vector<int32_t> latent_index_buffer = 
+                            tensor_to_vector<int32_t>(latent_indexes_cpu.select(0, j).reshape(-1));
+                        std::vector<int32_t> hyper_symbol_buffer = 
+                            tensor_to_vector<int32_t>(q_hyper_latent_cpu.select(0, j).reshape(-1));
+                        std::vector<int32_t> hyper_index_buffer = 
+                            tensor_to_vector<int32_t>(hyper_indexes_cpu.select(0, j).reshape(-1));
+                        
+                        // Encode (reusing the same encoder)
+                        result.latent_encoded = thread_encoder.encode_with_indexes(
+                            latent_symbol_buffer, latent_index_buffer,
+                            gs_quantized_cdf_, gs_cdf_length_, gs_offset_
+                        );
+                        
+                        result.hyper_encoded = thread_encoder.encode_with_indexes(
+                            hyper_symbol_buffer, hyper_index_buffer,
+                            vbr_quantized_cdf_, vbr_cdf_length_, vbr_offset_
+                        );
+                    }
                 }));
             }
 
-            std::vector<EncodingResult> encoding_results;
-            encoding_results.reserve(num_latent_codes);
-
+            // Wait for all threads
             for (auto& future : futures) {
-                encoding_results.push_back(future.get());
+                future.get();
             }
 
-            std::sort(encoding_results.begin(), encoding_results.end(), 
-                [](const EncodingResult& a, const EncodingResult& b) {
-                    return a.idx < b.idx;
-                });
-
+            // Store results (already in order due to pre-allocation)
             for (const auto& res : encoding_results) {
-                result.encoded_latents.push_back(res.latent_encoded);
-                result.encoded_hyper_latents.push_back(res.hyper_encoded);
+                result.encoded_latents.push_back(std::move(res.latent_encoded));
+                result.encoded_hyper_latents.push_back(std::move(res.hyper_encoded));
             }
 
             result.num_samples += num_input_samples;
