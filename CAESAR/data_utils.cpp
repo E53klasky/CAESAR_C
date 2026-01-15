@@ -4,7 +4,7 @@
 #include <iostream>
 
 std::pair<torch::Tensor, PaddingInfo> to_5d_and_pad(
-    const torch::Tensor& arr,
+    torch::Tensor& arr,
     int64_t H,
     int64_t W,
     bool force_padding
@@ -49,24 +49,14 @@ std::pair<torch::Tensor, PaddingInfo> to_5d_and_pad(
 
             PaddingInfo info;
             info.original_shape = original_shape;
+            original_shape.clear();
+            original_shape.shrink_to_fit();
             info.original_length = N;
             info.padded_shape = {result_5d.size(0), result_5d.size(1), result_5d.size(2), 
                                  result_5d.size(3), result_5d.size(4)};
             info.H = check_h;
             info.W = check_w;
             info.was_padded = false; 
-
-            std::cout << "Fast path: Converted tensor from shape [";
-            for (size_t i = 0; i < original_shape.size(); ++i) {
-                std::cout << original_shape[i];
-                if (i < original_shape.size() - 1) std::cout << ", ";
-            }
-            std::cout << "] to 5D shape [";
-            for (int i = 0; i < 5; ++i) {
-                std::cout << result_5d.size(i);
-                if (i < 4) std::cout << ", ";
-            }
-            std::cout << "] (no padding - dimensions meet threshold)\n";
 
             return {result_5d, info};
         }
@@ -90,9 +80,12 @@ std::pair<torch::Tensor, PaddingInfo> to_5d_and_pad(
     if (N % patch_area == 0) {
       
         torch::Tensor padded_5d = arr.view({1, 1, D, H, W});
+        arr = torch::Tensor();
 
         PaddingInfo info;
         info.original_shape = original_shape;
+        original_shape.clear();
+        original_shape.shrink_to_fit();
         info.original_length = N;
         info.padded_shape = {1, 1, D, H, W};
         info.H = H;
@@ -107,31 +100,27 @@ std::pair<torch::Tensor, PaddingInfo> to_5d_and_pad(
     torch::Tensor padded = torch::zeros({padded_length}, arr.options());
 
     torch::Tensor flat = arr.flatten();
+    arr = torch::Tensor();
     padded.index_put_({torch::indexing::Slice(0, N)}, flat);
+    padded = torch::Tensor();
 
     torch::Tensor padded_5d = padded.reshape({1, 1, D, H, W});
 
     PaddingInfo info;
     info.original_shape = original_shape;
+    original_shape.clear();
+    original_shape.shrink_to_fit();
     info.original_length = N;
     info.padded_shape = {1, 1, D, H, W};
     info.H = H;
     info.W = W;
     info.was_padded = true;
 
-    std::cout << "Converted tensor from shape [";
-    for (size_t i = 0; i < original_shape.size(); ++i) {
-        std::cout << original_shape[i];
-        if (i < original_shape.size() - 1) std::cout << ", ";
-    }
-    std::cout << "] to 5D padded shape [1, 1, " << D << ", " << H << ", " << W << "]\n";
-    std::cout << "  Original elements: " << N << ", Padded elements: " << padded_length << "\n";
-
     return {padded_5d, info};
 }
 
 torch::Tensor restore_from_5d(
-    const torch::Tensor& padded_5d,
+    torch::Tensor& padded_5d,
     const PaddingInfo& info
 ) {
     if (!info.was_padded) {
@@ -153,8 +142,10 @@ torch::Tensor restore_from_5d(
     }
 
     torch::Tensor flat = padded_5d.flatten();
+    padded_5d = torch::Tensor();
     torch::Tensor trimmed = flat.index({torch::indexing::Slice(0, info.original_length)});
     torch::Tensor restored = trimmed.reshape(torch::IntArrayRef(info.original_shape));
+    trimmed = torch::Tensor();
     
     std::cout << "Slow restore: Unpadded and reshaped back to original shape\n";
     

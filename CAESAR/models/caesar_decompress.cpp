@@ -178,7 +178,9 @@ torch::Tensor Decompressor::decompress(
     }
     std::vector<int64_t> input_shape(meta.data_input_shape.begin() , meta.data_input_shape.end());
     torch::Tensor recon_tensor = torch::zeros(input_shape).to(device_);
-    std::cout << "\nrecon_tensor shape: " << recon_tensor.sizes() << std::endl;
+    input_shape.clear();
+    input_shape.shrink_to_fit();
+
 
     for (size_t lat_start = 0; lat_start < encoded_latents.size(); lat_start += (size_t)batch_size * 2) {
         size_t lat_end = std::min(lat_start + (size_t)batch_size * 2 , encoded_latents.size());
@@ -264,15 +266,17 @@ torch::Tensor Decompressor::decompress(
         result.num_batches++;
     }
 
+    offsets_tensor = torch::Tensor();
+    scales_tensor = torch::Tensor();
+    indexes_tensor = torch::Tensor();
+
+
     auto [b1_i32 , b2_i32 , pad_i32] = meta.block_info;
 
     int64_t block_info_1 = b1_i32;
     int64_t block_info_2 = b2_i32;
     std::vector<int64_t> block_info_3(pad_i32.begin() , pad_i32.end());
 
-    for (auto v : block_info_3)
-        std::cout << v << " ";
-    std::cout << std::endl;
 
     torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor , block_info_1 , block_info_2 , block_info_3);
     recon_tensor = torch::Tensor();
@@ -282,10 +286,12 @@ torch::Tensor Decompressor::decompress(
         recon_tensor_deblock = torch::Tensor();
         torch::Tensor padded_recon_tensor = std::get<0>(padding_recon);
         std::vector<int> padding_recon_info = std::get<1>(padding_recon);
+        padding_recon = {};
 
         float global_scale = meta.global_scale;
         float global_offset = meta.global_offset;
         torch::Tensor padded_recon_tensor_norm = (padded_recon_tensor - global_offset) / global_scale;
+        padded_recon_tensor = torch::Tensor();
         double quan_factor = 2.0;
 
         std::string codec_alg = "Zstd";
@@ -326,8 +332,11 @@ torch::Tensor Decompressor::decompress(
         torch::Tensor recons_gae = pca_compressor.decompress(padded_recon_tensor_norm ,
             gae_record_metaData ,
             gae_record_compressedData);
+        padded_recon_tensor = torch::Tensor();
 
         torch::Tensor recons_gae_unpadded = unpadding(recons_gae , comp_result.gaeMetaData.padding_recon_info);
+        padding_recon_info.clear();
+        padding_recon_info.shrink_to_fit();
         torch::Tensor final_recon_norm = recons_data(recons_gae_unpadded , meta.data_input_shape , meta.pad_T);
         torch::Tensor final_recon = final_recon_norm * meta.global_scale + meta.global_offset;
         return final_recon;
