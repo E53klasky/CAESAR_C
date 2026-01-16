@@ -10,6 +10,7 @@
 #include "../CAESAR/models/caesar_decompress.h"
 #include "../CAESAR/dataset/dataset.h"
 #include "../CAESAR/data_utils.h"
+#include "../CAESAR/models/array_utils.h"
 #include <chrono>
 
 bool save_encoded_streams(const std::vector<std::string>& streams , const std::string& filename) {
@@ -208,7 +209,7 @@ int main() {
         config.test_size = { 256, 256 };
         config.augment_type = {};
 
-        float rel_eb = 0.0001f;
+        float rel_eb = 0.001f;
         auto start_timeC = std::chrono::high_resolution_clock::now();
         CompressionResult comp = compressor.compress(config , batch_size , rel_eb);
         auto end_timeC = std::chrono::high_resolution_clock::now();

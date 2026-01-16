@@ -8,8 +8,9 @@
 #include <limits>
 #include "caesar_compress.h"
 #include "model_utils.h"
+#include "model_cache.h"
+#include "array_utils.h"
 
-// ========== forward decls (keep same as your old file) ==========
 torch::Tensor deblockHW(const torch::Tensor& data,
                         int64_t nH,
                         int64_t nW,
@@ -37,33 +38,6 @@ torch::Tensor recons_data(const torch::Tensor& recons_data,
 
 // ========== utils ==========
 template<typename T>
-std::vector<T> load_array_from_bin(const std::string& filename) {
-    std::ifstream input_file(filename, std::ios::binary);
-    if (!input_file.is_open()) throw std::runtime_error("Cannot open file: " + filename);
-    input_file.seekg(0, std::ios::end);
-    size_t file_size_in_bytes = (size_t)input_file.tellg();
-    input_file.seekg(0, std::ios::beg);
-    size_t num_elements = file_size_in_bytes / sizeof(T);
-    std::vector<T> loaded_data(num_elements);
-    input_file.read(reinterpret_cast<char*>(loaded_data.data()), file_size_in_bytes);
-    input_file.close();
-    return loaded_data;
-}
-
-template<typename T>
-std::vector<std::vector<T>> reshape_to_2d(const std::vector<T>& flat_vec, size_t rows, size_t cols) {
-    if (flat_vec.size() != rows * cols) throw std::invalid_argument("Invalid dimensions for reshape.");
-    std::vector<std::vector<T>> vec_2d;
-    vec_2d.reserve(rows);
-    auto it = flat_vec.begin();
-    for (size_t r = 0; r < rows; ++r) {
-        vec_2d.emplace_back(it, it + cols);
-        it += cols;
-    }
-    return vec_2d;
-}
-
-template<typename T>
 std::vector<T> tensor_to_vector(const torch::Tensor& tensor) {
     torch::Tensor cpu_tensor = tensor.cpu().contiguous();
     const T* tensor_data_ptr = cpu_tensor.data_ptr<T>();
@@ -89,25 +63,18 @@ Decompressor::Decompressor(torch::Device device) : device_(device) {
 }
 
 void Decompressor::load_models() {
-    std::cout << "Loading decompressor models..." << std::endl;
-    hyper_decompressor_model_ = std::make_unique<torch::inductor::AOTIModelPackageLoader>(
-        get_model_file("caesar_hyper_decompressor.pt2").string()
-    );
-    decompressor_model_ = std::make_unique<torch::inductor::AOTIModelPackageLoader>(
-        get_model_file("caesar_decompressor.pt2").string()
-    );
+    hyper_decompressor_model_ = ModelCache::instance().get_hyper_decompressor_model();
+    decompressor_model_ = ModelCache::instance().get_decompressor_model();
 }
 
 void Decompressor::load_probability_tables() {
-    auto vbr_quantized_cdf_1d = load_array_from_bin<int32_t>(get_model_file("vbr_quantized_cdf.bin"));
-    vbr_cdf_length_ = load_array_from_bin<int32_t>(get_model_file("vbr_cdf_length.bin"));
-    vbr_offset_     = load_array_from_bin<int32_t>(get_model_file("vbr_offset.bin"));
-    vbr_quantized_cdf_ = reshape_to_2d(vbr_quantized_cdf_1d, 64, 63);
+    vbr_quantized_cdf_ = ModelCache::instance().get_vbr_quantized_cdf();
+    vbr_cdf_length_ = ModelCache::instance().get_vbr_cdf_length();
+    vbr_offset_ = ModelCache::instance().get_vbr_offset();
 
-    auto gs_quantized_cdf_1d = load_array_from_bin<int32_t>(get_model_file("gs_quantized_cdf.bin"));
-    gs_cdf_length_ = load_array_from_bin<int32_t>(get_model_file("gs_cdf_length.bin"));
-    gs_offset_     = load_array_from_bin<int32_t>(get_model_file("gs_offset.bin"));
-    gs_quantized_cdf_ = reshape_to_2d(gs_quantized_cdf_1d, 128, 249);
+    gs_quantized_cdf_ = ModelCache::instance().get_gs_quantized_cdf();
+    gs_cdf_length_ = ModelCache::instance().get_gs_cdf_length();
+    gs_offset_ = ModelCache::instance().get_gs_offset();
 }
 
 torch::Tensor Decompressor::reshape_batch_2d_3d(const torch::Tensor& batch_data, int64_t batch_size, int64_t n_frame) {
@@ -163,12 +130,10 @@ torch::Tensor Decompressor::decompress(
     RansDecoder range_decoder;
     auto& meta = comp_result.compressionMetaData;
 
-    // ---------- build offsets/scales ----------
     torch::TensorOptions opts = torch::TensorOptions().dtype(torch::kFloat32).device(device_);
     torch::Tensor offsets_tensor = torch::tensor(meta.offsets, opts);
     torch::Tensor scales_tensor  = torch::tensor(meta.scales,  opts);
 
-    // ---------- build indexes tensor ----------
     std::vector<int32_t> flat_indexes;
     flat_indexes.reserve(meta.indexes.size() * meta.indexes[0].size());
     for (const auto& v : meta.indexes)
@@ -184,21 +149,17 @@ torch::Tensor Decompressor::decompress(
     flat_indexes.clear();
     flat_indexes.shrink_to_fit();
 
-    // ---------- allocate recon tensor ----------
     std::vector<int64_t> input_shape(meta.data_input_shape.begin(), meta.data_input_shape.end());
     torch::Tensor recon_tensor = torch::zeros(input_shape).to(device_);
-    std::cout << "\nrecon_tensor shape: " << recon_tensor.sizes() << std::endl;
+    input_shape.clear();
+    input_shape.shrink_to_fit();
 
-    // ---------- NEW: prepare GAE decoder stuff ----------
-    // rebuild global pca basis
     torch::Tensor pcaBasis = rebuild_pca_basis_tensor(comp_result.gaeMetaData.global_pcaBasis, device_);
 
-    // must match compress-side settings
     double quan_factor = 2.0;
     std::string codec_alg = "Zstd";
     std::pair<int,int> patch_size = {8, 8};
 
-    // IMPORTANT: must match compress(rel_eb). if your test uses different rel_eb, store it in meta and read it here.
     double rel_eb = 1e-3;
 
     PCACompressor pca_compressor(
@@ -211,7 +172,6 @@ torch::Tensor Decompressor::decompress(
 
     int64_t gae_batch_id = 0;
 
-    // ---------- main loop over encoded streams ----------
     for (size_t lat_start = 0; lat_start < encoded_latents.size(); lat_start += (size_t)batch_size * 2) {
         size_t lat_end = std::min(lat_start + (size_t)batch_size * 2, encoded_latents.size());
         size_t cur_latents = lat_end - lat_start;
@@ -219,12 +179,10 @@ torch::Tensor Decompressor::decompress(
         size_t cur_samples = cur_latents / 2;
         size_t sample_start = lat_start / 2;
 
-        // hyper sizes (same as old)
         std::vector<int32_t> hyper_size = {(int32_t)cur_latents, 64, 4, 4};
         torch::Tensor hyper_index_tensor = build_indexes_tensor(hyper_size).contiguous();
         torch::Tensor decoded_hyper_latents = torch::zeros({(long)cur_latents, 64, 4, 4}).to(torch::kInt32);
 
-        // decode hyper
         for (size_t i = 0; i < cur_latents; i++) {
             std::vector<int32_t> hyper_index_vec =
                 tensor_to_vector<int32_t>(hyper_index_tensor.select(0, (long)i).reshape(-1));
@@ -241,14 +199,12 @@ torch::Tensor Decompressor::decompress(
             decoded_hyper_latents.select(0, (long)i).copy_(hyper_tensor);
         }
 
-        // run hyper_decompressor -> mean + latent_indexes
         std::vector<torch::Tensor> hyper_outputs =
             hyper_decompressor_model_->run({decoded_hyper_latents.to(torch::kDouble).to(device_)});
 
         torch::Tensor mean = hyper_outputs[0].to(torch::kFloat32);
         torch::Tensor latent_indexes_recon = hyper_outputs[1].to(torch::kInt32);
 
-        // decode latents
         torch::Tensor decoded_latents_before_offset = torch::zeros({(long)cur_latents, 64, 16, 16}).to(torch::kInt32);
 
         for (size_t i = 0; i < cur_latents; i++) {
@@ -267,7 +223,6 @@ torch::Tensor Decompressor::decompress(
             decoded_latents_before_offset.select(0, (long)i).copy_(latent_tensor);
         }
 
-        // add mean back
         torch::Tensor q_latent_with_offset = decoded_latents_before_offset.to(torch::kFloat32).to(device_) + mean;
 
         // reshape to [-1,2,...] then run decompressor
@@ -281,15 +236,8 @@ torch::Tensor Decompressor::decompress(
 
         torch::Tensor norm_output = reshape_batch_2d_3d(raw_output, (long)cur_samples, n_frame);
 
-        // ===================== NEW: batch-level GAE correction =====================
         if (gae_batch_id < (int64_t)comp_result.gae_batches.size()) {
             const auto& rec = comp_result.gae_batches[gae_batch_id];
-
-            // sanity check: batch size alignment
-            TORCH_CHECK(rec.batch_n == (int32_t)cur_samples,
-                        "GAE batch size mismatch: rec.batch_n=", rec.batch_n,
-                        " cur_samples=", (int32_t)cur_samples,
-                        " gae_batch_id=", (int32_t)gae_batch_id);
 
             if (rec.correction_occur) {
                 MetaData gae_md;
@@ -310,16 +258,13 @@ torch::Tensor Decompressor::decompress(
             }
         }
         gae_batch_id++;
-        // ==========================================================================
 
-        // denormalize per-sample using stored offsets/scales
         torch::Tensor batched_offsets = offsets_tensor.narrow(0, (long)sample_start, (long)cur_samples)
             .view({-1, 1, 1, 1, 1});
         torch::Tensor batched_scales = scales_tensor.narrow(0, (long)sample_start, (long)cur_samples)
             .view({-1, 1, 1, 1, 1});
         torch::Tensor denorm_output = norm_output * batched_scales + batched_offsets;
 
-        // write to recon_tensor
         torch::Tensor indexes_cpu = indexes_tensor.narrow(0, (long)sample_start, (long)cur_samples).to(torch::kCPU);
         for (int64_t i = 0; i < (int64_t)cur_samples; ++i) {
             torch::Tensor index_row = indexes_cpu.select(0, i);
@@ -337,16 +282,22 @@ torch::Tensor Decompressor::decompress(
         result.num_batches++;
     }
 
-    // deblock
+    offsets_tensor = torch::Tensor();
+    scales_tensor  = torch::Tensor();
+    indexes_tensor = torch::Tensor();
+
     auto [b1_i32, b2_i32, pad_i32] = meta.block_info;
+
     int64_t block_info_1 = b1_i32;
     int64_t block_info_2 = b2_i32;
     std::vector<int64_t> block_info_3(pad_i32.begin(), pad_i32.end());
 
-    torch::Tensor recon_tensor_deblock = deblockHW(recon_tensor, block_info_1, block_info_2, block_info_3);
+    torch::Tensor recon_tensor_deblock =
+        deblockHW(recon_tensor, block_info_1, block_info_2, block_info_3);
     recon_tensor = torch::Tensor();
 
-    // final: remove pad_T in time dim (same as old else-branch)
-    torch::Tensor final_recon = recons_data(recon_tensor_deblock, meta.data_input_shape, meta.pad_T);
+    torch::Tensor final_recon =
+        recons_data(recon_tensor_deblock, meta.data_input_shape, meta.pad_T);
     return final_recon;
+
 }
