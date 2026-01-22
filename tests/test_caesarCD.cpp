@@ -108,12 +108,6 @@ size_t get_2d_vector_data_size(const std::vector<std::vector<T>>& vec_2d) {
 size_t calculate_metadata_size(const CompressionResult& result) {
     size_t total_bytes = 0;
 
-
-
-    total_bytes += get_vector_data_size(result.gae_comp_data);
-
-
-
     total_bytes += sizeof(result.num_samples);
 
     total_bytes += sizeof(result.num_batches);
@@ -140,23 +134,20 @@ size_t calculate_metadata_size(const CompressionResult& result) {
     total_bytes += sizeof(meta.global_offset);
     total_bytes += sizeof(meta.pad_T);
 
+    total_bytes += get_2d_vector_data_size(result.gaeMetaData.global_pcaBasis);
 
-    const auto& gae_meta = result.gaeMetaData;
-
-
-    total_bytes += sizeof(gae_meta.GAE_correction_occur);
-
-    total_bytes += get_vector_data_size(gae_meta.padding_recon_info);
-
-    total_bytes += get_2d_vector_data_size(gae_meta.pcaBasis);
-
-    total_bytes += get_vector_data_size(gae_meta.uniqueVals);
-
-    total_bytes += sizeof(gae_meta.quanBin);
-    total_bytes += sizeof(gae_meta.nVec);
-    total_bytes += sizeof(gae_meta.prefixLength);
-    total_bytes += sizeof(gae_meta.dataBytes);
-    total_bytes += sizeof(gae_meta.coeffIntBytes);
+    for (const auto& rec : result.gae_batches) {
+        total_bytes += sizeof(rec.correction_occur);
+        if (!rec.correction_occur) continue;
+        
+        total_bytes += sizeof(rec.quanBin);
+        total_bytes += sizeof(rec.nVec);
+        total_bytes += sizeof(rec.prefixLength);
+        total_bytes += get_vector_data_size(rec.uniqueVals);
+        total_bytes += get_vector_data_size(rec.comp_data);
+        total_bytes += sizeof(rec.dataBytes);       
+        total_bytes += sizeof(rec.coeffIntBytes);
+    }
 
     return total_bytes;
 }
@@ -194,7 +185,7 @@ int main() {
             std::tie(raw_5d , padding_info) = to_5d_and_pad(raw , 256 , 256 , force_padding);
         }
 
-
+        
         torch::Device compression_device = torch::Device(torch::kCPU);
         torch::Device decompression_device = torch::Device(torch::kCPU);
 
@@ -217,7 +208,7 @@ int main() {
         config.test_size = { 256, 256 };
         config.augment_type = {};
 
-        float rel_eb = 0.001f;
+        float rel_eb = 0.0001f;
         auto start_timeC = std::chrono::high_resolution_clock::now();
         CompressionResult comp = compressor.compress(config , batch_size , rel_eb);
         auto end_timeC = std::chrono::high_resolution_clock::now();
@@ -262,7 +253,6 @@ int main() {
         std::cout << "  - Metadata bytes:     " << comp_all_meta_size << "\n";
         std::cout << "  - Compression Ratio (CR) without metadata: " << CR_without_meta << "\n";
         std::cout << "  - Compression Ratio (CR) with metadata:    " << CR_with_meta << "\n";
-
 
         double CR = CR_with_meta;
         std::cout << "\n===== DECOMPRESSION =====\n";
