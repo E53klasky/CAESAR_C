@@ -169,6 +169,9 @@ int main() {
 
         raw = raw.squeeze();
         std::cout << "After squeeze, shape: " << raw.sizes() << "\n";
+        
+        torch::Tensor raw_copy = raw.clone();
+        
         torch::Tensor raw_5d;
         PaddingInfo padding_info;
         bool force_padding = false; // to use padding or not
@@ -306,7 +309,7 @@ int main() {
         std::cout << "Reconstructed tensor shape: " << recon.sizes() << std::endl;
 
         torch::Tensor restored = restore_from_5d(recon , padding_info);
-        torch::Tensor raw_cpu = raw.to(torch::kCPU);
+        torch::Tensor raw_cpu = raw_copy.to(torch::kCPU);
         torch::Tensor recon_cpu = restored.to(torch::kCPU);
         torch::Tensor diff = recon_cpu - raw_cpu;
         double mse = diff.pow(2).mean().item<double>();
