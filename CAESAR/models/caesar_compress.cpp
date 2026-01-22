@@ -1,4 +1,4 @@
-#include "/blue/ranka/zhu.liangji/CAESAR_C++/CAESAR_C/CAESAR/models/caesar_compress.h"
+#include "caesar_compress.h"
 #include "range_coder/rans_coder.hpp"
 #include "runGaeCuda.h" 
 #include "model_utils.h"
