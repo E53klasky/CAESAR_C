@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
     const std::string out_dir = "./output/";
     std::filesystem::create_directories(out_dir);
 
-    const int batch_size = 128;
+    const int batch_size = 32;
     const int n_frame = 8;
     torch::Tensor raw = loadRawBinary(raw_path, shape);
 
@@ -226,8 +226,22 @@ int main(int argc, char** argv) {
           to_5d_and_pad(raw, 256, 256, force_padding);
     }
 
-    torch::Device compression_device = torch::Device(torch::kCUDA);
-    torch::Device decompression_device = torch::Device(torch::kCUDA);
+    torch::Device compression_device = torch::Device(torch::kCUDA, 0);
+      
+    auto device_count = torch::cuda::device_count();
+    std::cout << "Detected CUDA/ROCm devices: " << device_count << std::endl;
+      
+    torch::Device decompression_device = torch::Device(torch::kCPU);
+    
+    if (torch::cuda::is_available()) {
+        std::cout << "CUDA/ROCm Detected. Using GPU." << std::endl;
+        
+        int decomp_gpu_index = (device_count > 1) ? 1 : 0;
+        decompression_device = torch::Device(torch::kCUDA, decomp_gpu_index);
+        
+        std::cout << "  - Compression Device: GPU " << 0 << std::endl;
+        std::cout << "  - Decompression Device: GPU " << decomp_gpu_index << std::endl;
+    }
 
     std::cout << "\n===== COMPRESSION =====\n";
     Compressor compressor(compression_device);
