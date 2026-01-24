@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <sstream>
 
 #include "../CAESAR/data_utils.h"
 #include "../CAESAR/dataset/dataset.h"
@@ -115,63 +116,86 @@ size_t get_2d_vector_data_size(const std::vector<std::vector<T>>& vec_2d) {
   return total_bytes;
 }
 
-size_t calculate_metadata_size(const CompressionResult& result) {
-  size_t total_bytes = 0;
+// 1. Network Metadata Cost
+size_t calculate_network_metadata_size(const CompressionResult& result) {
+    size_t total_bytes = 0;
+    total_bytes += sizeof(result.num_samples);
+    total_bytes += sizeof(result.num_batches);
 
-  total_bytes += get_vector_data_size(result.gae_comp_data);
+    const auto& meta = result.compressionMetaData;
+    total_bytes += get_vector_data_size(meta.offsets);
+    total_bytes += get_vector_data_size(meta.scales);
+    total_bytes += get_2d_vector_data_size(meta.indexes);
+    total_bytes += sizeof(std::get<0>(meta.block_info));
+    total_bytes += sizeof(std::get<1>(meta.block_info));
+    total_bytes += get_vector_data_size(std::get<2>(meta.block_info));
+    total_bytes += get_vector_data_size(meta.data_input_shape);
+    total_bytes += get_vector_data_size(meta.filtered_blocks);
+    total_bytes += sizeof(meta.global_scale);
+    total_bytes += sizeof(meta.global_offset);
+    total_bytes += sizeof(meta.pad_T);
 
-  total_bytes += sizeof(result.num_samples);
-
-  total_bytes += sizeof(result.num_batches);
-
-  const auto& meta = result.compressionMetaData;
-
-  // std::vector<float> offsets
-  total_bytes += get_vector_data_size(meta.offsets);
-  // std::vector<float> scales
-  total_bytes += get_vector_data_size(meta.scales);
-  // std::vector<std::vector<int32_t>> indexes
-  total_bytes += get_2d_vector_data_size(meta.indexes);
-  // std::tuple<int32_t, int32_t, std::vector<int32_t>> block_info
-  total_bytes += sizeof(std::get<0>(meta.block_info));  // nH (int32_t)
-  total_bytes += sizeof(std::get<1>(meta.block_info));  // nW (int32_t)
-  total_bytes += get_vector_data_size(
-      std::get<2>(meta.block_info));  // padding (vector<int32_t>)
-  // std::vector<int32_t> data_input_shape
-  total_bytes += get_vector_data_size(meta.data_input_shape);
-  // std::vector<std::pair<int32_t, float>> filtered_blocks
-  total_bytes += get_vector_data_size(meta.filtered_blocks);
-  // float global_scale, float global_offset, int64_t pad_T
-  total_bytes += sizeof(meta.global_scale);
-  total_bytes += sizeof(meta.global_offset);
-  total_bytes += sizeof(meta.pad_T);
-
-  const auto& gae_meta = result.gaeMetaData;
-
-  total_bytes += sizeof(gae_meta.GAE_correction_occur);
-
-  total_bytes += get_vector_data_size(gae_meta.padding_recon_info);
-
-  total_bytes += get_2d_vector_data_size(gae_meta.pcaBasis);
-
-  total_bytes += get_vector_data_size(gae_meta.uniqueVals);
-
-  total_bytes += sizeof(gae_meta.quanBin);
-  total_bytes += sizeof(gae_meta.nVec);
-  total_bytes += sizeof(gae_meta.prefixLength);
-  total_bytes += sizeof(gae_meta.dataBytes);
-  total_bytes += sizeof(gae_meta.coeffIntBytes);
-
-  return total_bytes;
+    return total_bytes;
 }
 
-int main() {
+// 2. GAE Metadata Cost
+size_t calculate_gae_metadata_size(const CompressionResult& result) {
+    size_t total_bytes = 0;
+    const auto& gae_meta = result.gaeMetaData;
+
+    total_bytes += sizeof(gae_meta.GAE_correction_occur);
+    total_bytes += get_vector_data_size(gae_meta.padding_recon_info);
+    total_bytes += get_2d_vector_data_size(gae_meta.pcaBasis);
+    total_bytes += get_vector_data_size(gae_meta.uniqueVals);
+    total_bytes += sizeof(gae_meta.quanBin);
+    total_bytes += sizeof(gae_meta.nVec);
+    total_bytes += sizeof(gae_meta.prefixLength);
+    total_bytes += sizeof(gae_meta.dataBytes);
+    total_bytes += sizeof(gae_meta.coeffIntBytes);
+
+    return total_bytes;
+}
+
+// 3. GAE Coeff Size Cost (Pure Data)
+size_t calculate_gae_coeff_size(const CompressionResult& result) {
+    return get_vector_data_size(result.gae_comp_data);
+}
+
+// Function for previous code compatibility (summation of 1,2,3)
+size_t calculate_metadata_size(const CompressionResult& result) {
+    return calculate_network_metadata_size(result) + 
+           calculate_gae_metadata_size(result) + 
+           calculate_gae_coeff_size(result);
+}
+
+// Helper to parse shape string "1,1,20,256,256" -> vector
+std::vector<int64_t> parse_shape(const std::string& shape_str) {
+    std::vector<int64_t> shape;
+    std::stringstream ss(shape_str);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        shape.push_back(std::stoll(item));
+    }
+    return shape;
+}
+
+int main(int argc, char** argv) {
   try {
     // keep shape for cpu ci test 1,1,20,256,256
-    const std::vector<int64_t> shape = {1, 1, 20, 256, 256};
-    const std::string raw_path = "TCf48.bin.f32";
-    const std::string out_dir = "./output/";
+    //const std::vector<int64_t> shape = {1, 1, 20, 256, 256};
+    //const std::string raw_path = "TCf48.bin.f32";
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <raw_file_path> <shape_str> <rel_eb>" << std::endl;
+        std::cerr << "Example: " << argv[0] << " TCf48.bin.f32 1,1,20,256,256 0.001" << std::endl;
+        return 1;
+    }
 
+    // Parse Arguments
+    const std::string raw_path = argv[1];
+    const std::vector<int64_t> shape = parse_shape(argv[2]);
+    const float rel_eb = std::stof(argv[3]);
+      
+    const std::string out_dir = "./output/";
     std::filesystem::create_directories(out_dir);
 
     const int batch_size = 128;
@@ -202,8 +226,8 @@ int main() {
           to_5d_and_pad(raw, 256, 256, force_padding);
     }
 
-    torch::Device compression_device = torch::Device(torch::kCPU);
-    torch::Device decompression_device = torch::Device(torch::kCPU);
+    torch::Device compression_device = torch::Device(torch::kCUDA);
+    torch::Device decompression_device = torch::Device(torch::kCUDA);
 
     std::cout << "\n===== COMPRESSION =====\n";
     Compressor compressor(compression_device);
@@ -213,7 +237,7 @@ int main() {
     config.device = torch::Device(torch::kCPU);
     config.variable_idx = 0;
     config.n_frame = n_frame;
-    config.dataset_name = "TCf48 Dataset";
+    config.dataset_name = "Custom Dataset";
     config.section_range = std::nullopt;
     config.frame_range = std::nullopt;
     config.train_size = 256;
@@ -224,7 +248,7 @@ int main() {
     config.test_size = {256, 256};
     config.augment_type = {};
 
-    float rel_eb = 0.001f;
+    //float rel_eb = 0.001f;
     auto start_timeC = std::chrono::high_resolution_clock::now();
     CompressionResult comp = compressor.compress(config, batch_size, rel_eb);
     auto end_timeC = std::chrono::high_resolution_clock::now();
@@ -257,23 +281,32 @@ int main() {
     for (auto d : shape) num_elements *= static_cast<uint64_t>(d);
     uint64_t uncompressed_bytes = num_elements * sizeof(float);
 
-    size_t comp_all_meta_size = calculate_metadata_size(comp);
+    // Calculate split costs
+    size_t net_meta_size = calculate_network_metadata_size(comp);
+    size_t gae_meta_size = calculate_gae_metadata_size(comp);
+    size_t gae_coeff_size = calculate_gae_coeff_size(comp);
+    size_t comp_all_meta_size = net_meta_size + gae_meta_size; // Total metadata overhead
 
     double CR_without_meta = (compressed_bytes > 0)
                                  ? static_cast<double>(uncompressed_bytes) /
-                                       static_cast<double>(compressed_bytes)
+                                       (static_cast<double>(compressed_bytes) + static_cast<double>(gae_coeff_size))
                                  : 0.0;
 
     double CR_with_meta = (compressed_bytes + comp_all_meta_size > 0)
                               ? static_cast<double>(uncompressed_bytes) /
-                                    (static_cast<double>(compressed_bytes) +
+                                    (static_cast<double>(compressed_bytes) + static_cast<double>(gae_coeff_size) +      
                                      static_cast<double>(comp_all_meta_size))
                               : 0.0;
 
     std::cout << "\nCompression stats:\n";
     std::cout << "  - Uncompressed bytes: " << uncompressed_bytes << "\n";
-    std::cout << "  - Compressed bytes:   " << compressed_bytes << "\n";
-    std::cout << "  - Metadata bytes:     " << comp_all_meta_size << "\n";
+    std::cout << "  - Compressed bytes (Latents): " << compressed_bytes << "\n";
+    std::cout << "  - GAE Coeff Data bytes:   " << gae_coeff_size << "\n";
+    std::cout << "  -----------------------------\n";
+    std::cout << "  - Network Metadata bytes: " << net_meta_size << "\n";
+    std::cout << "  - GAE Metadata bytes:     " << gae_meta_size << "\n";    
+    std::cout << "  - Total Overhead bytes:   " << comp_all_meta_size << "\n";
+    std::cout << "  -----------------------------\n";
     std::cout << "  - Compression Ratio (CR) without metadata: "
               << CR_without_meta << "\n";
     std::cout << "  - Compression Ratio (CR) with metadata:    " << CR_with_meta
@@ -281,7 +314,26 @@ int main() {
 
     double CR = CR_with_meta;
     std::cout << "\n===== DECOMPRESSION =====\n";
+    ModelCache::instance().clear();
 
+    if (decompression_device.is_cuda()) {
+        int target_gpu_id = decompression_device.index();
+        std::cout << "[INFO] Switching to GPU " << target_gpu_id << "..." << std::endl;
+        int err = 0;
+
+#ifdef USE_ROCM
+        err = hipSetDevice(target_gpu_id);
+        if (err != 0) {
+             std::cerr << "Warning: hipSetDevice failed with error code " << err << std::endl;
+        }
+#else
+        err = cudaSetDevice(target_gpu_id);
+        if (err != 0) {
+             std::cerr << "Warning: cudaSetDevice failed with error code " << err << std::endl;
+        }
+#endif
+    }
+      
     std::vector<std::string> loaded_latents =
         load_encoded_streams(latents_file);
     std::vector<std::string> loaded_hyper = load_encoded_streams(hyper_file);
@@ -348,6 +400,8 @@ int main() {
 
     std::cout << "\n  TEST PASSED: Compression and decompression completed "
                  "successfully!\n";
+    
+    ModelCache::instance().clear();
     return 0;
 
   } catch (const std::exception& e) {
