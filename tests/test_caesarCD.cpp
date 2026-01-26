@@ -164,7 +164,7 @@ int main() {
 
         std::filesystem::create_directories(out_dir);
 
-        const int batch_size = 32;
+        const int batch_size = 1;
         const int n_frame = 8;
         torch::Tensor raw = loadRawBinary(raw_path , shape);
 
