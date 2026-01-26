@@ -766,7 +766,7 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
                         d_status ,
                         stream));
 
-                    CHECK_CUDA(cudaStreamSynchronize(stream));
+                    
 
                     nvcompStatus_t h_status;
                     CHECK_CUDA(cudaMemcpy(&h_status , d_status , sizeof(nvcompStatus_t) ,
@@ -1092,7 +1092,7 @@ MainData PCACompressor::decompressLossless(
                         d_status ,
                         stream));
 
-                    CHECK_CUDA(cudaStreamSynchronize(stream));
+                
 
                     nvcompStatus_t h_status;
                     CHECK_CUDA(cudaMemcpy(&h_status , d_status , sizeof(nvcompStatus_t) ,
@@ -1175,7 +1175,6 @@ MainData PCACompressor::decompressLossless(
                 d_statuses ,
                 stream));
 
-            CHECK_CUDA(cudaStreamSynchronize(stream));
 
             nvcompStatus_t h_status{};
             CHECK_CUDA(cudaMemcpy(&h_status , d_statuses , sizeof(nvcompStatus_t) , cudaMemcpyDeviceToHost));
