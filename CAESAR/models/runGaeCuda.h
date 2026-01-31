@@ -18,15 +18,27 @@
 #include <torch/script.h>
 #include <unordered_map>
 #include <algorithm>
+
 #ifdef USE_CUDA
+#if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_runtime.h>
+#include <c10/hip/HIPCachingAllocator.h>
+#else
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <c10/cuda/CUDACachingAllocator.h>
+
+#ifdef ENABLE_NVCOMP
 #include <nvcomp/lz4.h>
 #include <nvcomp/cascaded.h>
 #include <nvcomp/zstd.h>   
 #endif
+#endif
+#endif
+
+#include "model_utils.h"
 #include <zstd.h> 
+
 class PCA {
 public:
     PCA(int numComponents = -1 , const std::string& device = "cuda");
@@ -104,13 +116,14 @@ public:
     torch::Tensor decompress(const torch::Tensor& reconsData ,
         const MetaData& metaData ,
         const CompressedData& compressedData);
-    std::pair<std::unique_ptr<CompressedData>, int64_t> compressLossless(
-        const MetaData& metaData,
+    std::pair<std::unique_ptr<CompressedData> , int64_t> compressLossless(
+        const MetaData& metaData ,
         const MainData& mainData);
 
     MainData decompressLossless(
-        const MetaData& metaData,
+        const MetaData& metaData ,
         const CompressedData& compressedData);
+    
 private:
     double quanBin_;
     torch::Device device_;
@@ -119,22 +132,10 @@ private:
     int vectorSize_;
     double errorBound_;
     double error_;
-
-//     std::pair<std::unique_ptr<CompressedData> , int64_t> compressLossless(
-//         const MetaData& metaData ,
-//         const MainData& mainData);
-
-
-//     MainData decompressLossless(const MetaData& metaData ,
-//         const CompressedData& compressedData);
-
     torch::Tensor toCPUContiguous(const torch::Tensor& tensor);
     std::vector<uint8_t> serializeTensor(const torch::Tensor& tensor);
-
-
     torch::Tensor deserializeTensor(const std::vector<uint8_t>& bytes ,
         const std::vector<int64_t>& shape ,
         torch::ScalarType dtype);
-
     void cleanupGPUMemory();
 };

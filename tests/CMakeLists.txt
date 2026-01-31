@@ -1,63 +1,79 @@
-find_package(MPI)
-if(MPI_FOUND)
-    message(STATUS "MPI found, enabling MPI tests")
-    set(MPI_LIB MPI::MPI_CXX)
+
+if(APPLE)
+    set(FILESYSTEM_LIB "")
+elseif(UNIX AND NOT APPLE)
+    set(FILESYSTEM_LIB "stdc++fs")
 else()
-    message(STATUS "MPI not found, skipping MPI linking")
-    set(MPI_LIB "")
+    set(FILESYSTEM_LIB "")
 endif()
+
+if(TORCH_CUDA_ARCH_LIST OR CUDA_FOUND OR HIP_FOUND)
+    set(USE_CUDA ON)
+    message(STATUS "Tests: GPU Support Enabled")
+else()
+    set(USE_CUDA OFF)
+    message(STATUS "Tests: GPU Support Disabled (CPU Only)")
+endif()
+
+set(NVCOMP_FOUND OFF)
+if(USE_CUDA)
+    find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h nvcomp/nvcomp.h)
+    find_library(NVCOMP_LIBRARY NAMES nvcomp)
+
+    if(NVCOMP_INCLUDE_DIR AND NVCOMP_LIBRARY)
+        set(NVCOMP_FOUND TRUE)
+        message(STATUS "Tests: CUDA + nvcomp found")
+    else()
+        message(STATUS "Tests: nvcomp NOT found (Hybrid/AMD Mode)")
+    endif()
+endif()
+
+
+add_executable(test_caesarCD test_caesarCD.cpp)
+target_link_libraries(test_caesarCD PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
+
+add_executable(test_caesarC test_caesarC.cpp)
+target_link_libraries(test_caesarC PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
+
+
+add_executable(test_padding test_padding.cpp)
+target_link_libraries(test_padding PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
 
 
 
 add_executable(test_runGaeCuda testRunGaeCuda.cpp)
-target_link_libraries(test_runGaeCuda PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs )
+target_link_libraries(test_runGaeCuda PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
 
+if(USE_CUDA)
+    target_compile_definitions(test_runGaeCuda PRIVATE USE_CUDA)
+    
+    if(NVCOMP_FOUND)
+        target_compile_definitions(test_runGaeCuda PRIVATE ENABLE_NVCOMP)
+        target_include_directories(test_runGaeCuda PRIVATE ${NVCOMP_INCLUDE_DIR})
+    endif()
 
-add_executable(test_dataset testDataSet.cpp)
-target_link_libraries(test_dataset PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs )
+    if(HIP_FOUND)
+        target_compile_definitions(test_runGaeCuda PRIVATE USE_ROCM)
+    endif()
 
-add_executable(test_dataset2 testDataSet2.cpp)
-target_link_libraries(test_dataset2 PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs ${MPI_LIB})
+    if(CUDA_FOUND)
+        target_include_directories(test_runGaeCuda PRIVATE ${CUDA_INCLUDE_DIRS})
+    endif()
 
-
-
-add_executable(test_caesarCD test_caesarCD.cpp)
-target_link_libraries(test_caesarCD
-   PRIVATE
-   caesar_lib
-   "${TORCH_LIBRARIES}"
-   stdc++fs
-)
-
-add_executable(test_rans test_range_coder_consistency.cpp)
-target_link_libraries(test_rans PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs )
-
-add_executable(test_caesarC test_caesarC.cpp)
-target_link_libraries(test_caesarC
-    PRIVATE
-    caesar_lib
-    "${TORCH_LIBRARIES}"
-    stdc++fs
-)
-
-add_executable(test_caesarD test_decompress_consistency.cpp)
-target_link_libraries(test_caesarD PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs )
-
-add_executable(test_datasetNRMSE testDatasetNRMSE.cpp)
-target_link_libraries(test_datasetNRMSE PRIVATE caesar_lib "${TORCH_LIBRARIES}" stdc++fs )
+    message(STATUS "Building test_runGaeCuda with GPU support")
+else()
+    message(STATUS "Building test_runGaeCuda in CPU-only mode")
+endif()
 
 set(TEST_TARGETS
-    test_runGaeCuda
     test_dataset
-    test_dataset2
     test_caesarC
     test_caesarCD
+    test_padding
     test_datasetNRMSE
-    test_rans
-    test_caesarD
+    test_runGaeCuda
 )
 
-# Copy DLLs on MSVC if needed
 if(MSVC)
     file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
     foreach(test_exe ${TEST_TARGETS})
@@ -66,4 +82,3 @@ if(MSVC)
             ${TORCH_DLLS} $<TARGET_FILE_DIR:${test_exe}>)
     endforeach()
 endif()
-

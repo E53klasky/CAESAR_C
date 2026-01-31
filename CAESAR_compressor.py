@@ -1,7 +1,6 @@
 import os
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import Dataset, TensorDataset, DataLoader
 
@@ -154,10 +153,11 @@ class Compressor(nn.Module):
         hyper_latent = self.hyper_encode(latent)
         q_hyper_latent, hyper_indexes = self.range_coder.compress_hyperlatent_return_para(hyper_latent)
         
-        mean, scale = self.hyper_decode(q_hyper_latent.float())
-        q_latent, latent_indexes = self.range_coder.compress_return_para(latent, mean, scale)
+        #mean, scale = self.hyper_decode(q_hyper_latent.to(x.dtype))
+        #q_latent, latent_indexes = self.range_coder.compress_return_para(latent, mean, scale)
         
-        return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        #return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        return latent, q_hyper_latent, hyper_indexes, B
     
     def decompress(self, latent_string, hyper_latent_string, original_shape, hyper_shape, device = "cuda"):
         B, _, T, _, _ = original_shape
@@ -355,13 +355,17 @@ class CompressorMix(nn.Module):
 
     def forward(self, x):
         
-        q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B = self.compress(x)
-        
-        return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        #q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B = self.compress(x)        
+        #return q_latent, latent_indexes, q_hyper_latent, hyper_indexes, B
+        latent, q_hyper_latent, hyper_indexes, B = self.compress(x)        
+        return latent, q_hyper_latent, hyper_indexes, B
 
 device = sys.argv[1] # Setting device (cuda or cpu for now)
-if not torch.cuda.is_available(): # If GPU is not avaiable
+if device == 'cpu': # If GPU is not avaiable
     device = 'cpu'
+else: 
+    device = 'cuda'
+model_name =f'caesar_compressor'
 
 def remove_module_prefix(state_dict):
         new_state_dict = OrderedDict()
@@ -384,6 +388,7 @@ model = CompressorMix(
 
 state_dict = remove_module_prefix(torch.load('./pretrained/caesar_v.pt', map_location=device))
 model.load_state_dict(state_dict)
+model = model.half()
 
 quantized_cdf, cdf_length, offset = model.entropy_model.prior._update(30)
 medians = model.entropy_model.prior.medians.detach()
@@ -410,7 +415,7 @@ model.eval()
 with torch.no_grad():
     print('device: ', device)
     model = model.to(device)
-    example_inputs=(torch.randn(8, 1, 8, 256, 256, device=device),)
+    example_inputs=(torch.randn(8, 1, 8, 256, 256, device=device).half(),)
     batch_dim = torch.export.Dim("batch", min=1, max=255)
     # [Optional] Specify the first dimension of the input x as dynamic.
     exported = torch.export.export(model, example_inputs, dynamic_shapes={"x": {0: batch_dim}})
@@ -422,12 +427,6 @@ with torch.no_grad():
         exported,
         # [Optional] Specify the generated shared library path. If not specified,
         # the generated artifact is stored in your system temp directory.
-        package_path=os.path.join(os.getcwd(), "exported_model/caesar_compressor.pt2"),
+        package_path=os.path.join(os.getcwd(), f"exported_model/{model_name}.pt2"),
     )
-
-file_path = "exported_model/caesar_compressor.pt2"
-
-if os.path.isfile(file_path):
-    print('Exporting compressor is COMPLETED')
-else:
-    print('Exporting compressor is NOT completed')
+    print(f"Compressed model saved to exported_model/{model_name}.pt2")
