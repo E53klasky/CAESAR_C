@@ -1,20 +1,40 @@
 #include "runGaeCuda.h"
 
 #ifdef USE_CUDA
+#if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
 #define CHECK_CUDA(cmd) do { \
-  cudaError_t e = (cmd); \
-  if (e != cudaSuccess) { \
-    throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(e)); \
-  } \
-} while(0)
-
-#define CHECK_NVCOMP(cmd) do { \
-  nvcompStatus_t s = (cmd); \
-  if (s != nvcompSuccess) { \
-    throw std::runtime_error("nvCOMP error in " #cmd); \
-  } \
-} while(0)
+          hipError_t e = (cmd); \
+          if (e != hipSuccess) { \
+            throw std::runtime_error(std::string("HIP error: ") + hipGetErrorString(e)); \
+          } \
+        } while(0)
+#else
+#define CHECK_CUDA(cmd) do { \
+          cudaError_t e = (cmd); \
+          if (e != cudaSuccess) { \
+            throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(e)); \
+          } \
+        } while(0)
 #endif
+
+#ifdef ENABLE_NVCOMP
+#define CHECK_NVCOMP(cmd) do { \
+          nvcompStatus_t s = (cmd); \
+          if (s != nvcompSuccess) { \
+            throw std::runtime_error("nvCOMP error in " #cmd); \
+          } \
+        } while(0)
+#endif
+#endif
+
+// ===== nvcomp codec selector (edit here) =====
+#define NVCOMP_CODEC_ZSTD     0
+#define NVCOMP_CODEC_GDEFLATE 1
+#define NVCOMP_CODEC_LZ4      2
+#define NVCOMP_CODEC_SNAPPY   3
+#define NVCOMP_CODEC_CASCADED 4
+
+static int g_nvcomp_codec = NVCOMP_CODEC_ZSTD;
 
 PCA::PCA(int numComponents , const std::string& device)
     : numComponents_(numComponents) , device_(torch::Device(device)) {
@@ -39,6 +59,7 @@ PCA& PCA::fit(const torch::Tensor& x) {
     components_ = Vt;
     return *this;
 }
+
 
 torch::Tensor block2Vector(const torch::Tensor& blockData , std::pair<int , int> patchSize) {
     int patchH = patchSize.first;
@@ -148,9 +169,12 @@ torch::Tensor indexMaskReverse(const torch::Tensor& prefixMask ,
     int64_t numCols) {
     auto device = prefixMask.device();
     auto arange = torch::arange(numCols , torch::dtype(torch::kLong).device(device));
-    auto mask = arange.unsqueeze(0).le(maskLength.unsqueeze(1));
-    auto arr2d = torch::zeros({ maskLength.size(0), numCols } ,
+    auto maskLength_d = maskLength.to(prefixMask.device());
+    auto mask = arange.unsqueeze(0).le(maskLength_d.unsqueeze(1));
+
+    auto arr2d = torch::zeros({ maskLength_d.size(0), numCols } ,
         torch::dtype(torch::kBool).device(device));
+
 
     arr2d.index_put_({ mask } , prefixMask.to(torch::kBool).reshape({ -1 }));
     return arr2d;
@@ -162,7 +186,7 @@ std::vector<uint8_t> BitUtils::bitsToBytes(const torch::Tensor& bitArray) {
         bits = bitArray.to(torch::kUInt8);
     }
     else {
-        bits = bitArray.clone();
+        bits = bitArray;
     }
 
     bits = bits.contiguous().cpu();
@@ -236,7 +260,7 @@ PCACompressor::PCACompressor(double nrmse ,
     const std::string& codecAlgorithm ,
     std::pair<int , int> patchSize)
     : quanBin_(nrmse* quanFactor) ,
-    device_(device == "cuda" ? torch::kCUDA : torch::kCPU) ,
+    device_(device.rfind("cuda", 0) == 0 ? torch::kCUDA : torch::kCPU) ,
     codecAlgorithm_(codecAlgorithm) ,
     patchSize_(patchSize) ,
     vectorSize_(patchSize.first* patchSize.second) ,
@@ -252,8 +276,11 @@ PCACompressor::PCACompressor(double nrmse ,
 }
 
 PCACompressor::~PCACompressor() {
+#ifdef USE_CUDA
     cleanupGPUMemory();
+#endif
 }
+
 
 GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     const torch::Tensor& reconsData) {
@@ -276,8 +303,13 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         }
     }
 
-    torch::Tensor originalDataDevice = originalData.to(device_ , true);
-    torch::Tensor reconsDataDevice = reconsData.to(device_ , true);
+    torch::Tensor originalDataDevice = originalData.device() == device_
+        ? originalData
+        : originalData.to(device_ , true);
+
+    torch::Tensor reconsDataDevice = reconsData.device() == device_
+        ? reconsData
+        : reconsData.to(device_ , true);
 
     if (inputShape.size() == 2) {
         assert(originalDataDevice.size(1) == vectorSize_);
@@ -290,8 +322,12 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     torch::Tensor residualPca = originalDataDevice - reconsDataDevice;
 
     torch::Tensor norms = torch::linalg_norm(residualPca , c10::nullopt , { 1 });
-    torch::Tensor processMask = norms > errorBound_;
-    if (torch::sum(processMask).item<int64_t>() <= 0) {
+
+    MainData mainData;
+    mainData.processMask = norms > errorBound_;
+    norms = torch::Tensor();
+
+    if (torch::sum(mainData.processMask).item<int64_t>() <= 0) {
         MetaData metaData;
         metaData.GAE_correction_occur = false;
         metaData.pcaBasis = torch::empty({ 0, vectorSize_ } , torch::kFloat32);
@@ -309,13 +345,14 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         return { metaData, std::move(compressedData), 0 };
     }
 
-    auto indices = torch::nonzero(processMask).squeeze(1);
-
+    auto indices = torch::nonzero(mainData.processMask).squeeze(1);
     residualPca = torch::index_select(residualPca , 0 , indices);
+    indices = torch::Tensor();
 
     PCA pca(-1 , device_.str());
     pca.fit(residualPca);
     torch::Tensor pcaBasis = pca.components();
+    std::cout << "finished pca\n";
 
     if (pcaBasis.size(0) == 0 || pcaBasis.size(1) == 0) {
         MetaData metaData;
@@ -340,6 +377,8 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
     torch::Tensor reconError = torch::abs(reconstructedResidual - residualPca);
     double reconErrorMax = reconError.max().item<double>();
 
+    reconstructedResidual = torch::Tensor();
+    reconError = torch::Tensor();
 
     if (reconErrorMax > error_) {
         std::cout << "[WARN] High PCA reconstruction error (" << reconErrorMax
@@ -349,27 +388,36 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
         pca.fit(residualPca);
         pcaBasis = pca.components();
         allCoeff = torch::matmul(residualPca , pcaBasis.transpose(0 , 1));
+        
+        pcaBasis = pcaBasis.to(torch::kFloat32);
+        allCoeff = allCoeff.to(torch::kFloat32);
     }
 
     originalDataDevice = torch::Tensor();
     reconsDataDevice = torch::Tensor();
     residualPca = torch::Tensor();
+#ifdef USE_CUDA
     cleanupGPUMemory();
+#endif
 
+    std::cout << "allCoeffpower\n";
     torch::Tensor allCoeffPower = allCoeff.pow(2);
     torch::Tensor sortIndex = torch::argsort(allCoeffPower , 1 , true);
-
     torch::Tensor allCoeffSorted = torch::gather(allCoeff , 1 , sortIndex);
     torch::Tensor quanCoeffSorted = torch::round(allCoeffSorted / quanBin_) * quanBin_;
     torch::Tensor resCoeffSorted = allCoeffSorted - quanCoeffSorted;
-
     allCoeffSorted = torch::Tensor();
-    cleanupGPUMemory();
 
-    torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower , 1 , sortIndex) - resCoeffSorted.pow(2);
+    torch::Tensor tmp = resCoeffSorted.pow(2);
+    torch::Tensor allCoeffPowerDesc = torch::gather(allCoeffPower , 1 , sortIndex) - tmp;
+    tmp = torch::Tensor();
+    resCoeffSorted = torch::Tensor();
+
     torch::Tensor stepErrors = torch::ones_like(allCoeffPowerDesc);
     torch::Tensor remainErrors = torch::sum(allCoeffPower , 1);
+    allCoeffPower = torch::Tensor();
 
+    std::cout << "before for loop of compress in gae\n";
     for (int64_t i = 0; i < stepErrors.size(1); ++i) {
         remainErrors = remainErrors - allCoeffPowerDesc.select(1 , i);
         stepErrors.select(1 , i) = remainErrors;
@@ -377,21 +425,18 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     allCoeffPowerDesc = torch::Tensor();
     remainErrors = torch::Tensor();
-    cleanupGPUMemory();
 
     torch::Tensor mask = stepErrors > (errorBound_ * errorBound_);
-
     stepErrors = torch::Tensor();
-    cleanupGPUMemory();
 
     torch::Tensor firstFalseIdx = torch::argmin(mask.to(torch::kInt) , 1);
     auto batchIndices = torch::arange(mask.size(0) , torch::TensorOptions().device(device_));
     mask.index_put_({ batchIndices.unsqueeze(1), firstFalseIdx.unsqueeze(1) } , true);
+    firstFalseIdx = torch::Tensor();
+    batchIndices = torch::Tensor();
 
     torch::Tensor selectedCoeffQ = quanCoeffSorted * mask;
-
     quanCoeffSorted = torch::Tensor();
-    cleanupGPUMemory();
 
     torch::Tensor selectedCoeffUnsortQ = torch::zeros_like(selectedCoeffQ);
     auto idx = torch::arange(selectedCoeffQ.size(0) , torch::TensorOptions().device(device_)).unsqueeze(1);
@@ -399,67 +444,116 @@ GAECompressionResult PCACompressor::compress(const torch::Tensor& originalData ,
 
     selectedCoeffQ = torch::Tensor();
     sortIndex = torch::Tensor();
+    idx = torch::Tensor();
+#ifdef USE_CUDA
     cleanupGPUMemory();
+#endif
 
     mask = selectedCoeffUnsortQ != 0;
+    selectedCoeffUnsortQ = torch::Tensor();
 
     torch::Tensor coeffIntFlatten = torch::round(
         allCoeff.masked_select(mask) / quanBin_
     );
-
-    selectedCoeffUnsortQ = torch::Tensor();
     allCoeff = torch::Tensor();
-    cleanupGPUMemory();
 
-    auto uniqueResult = at::_unique(coeffIntFlatten , true , true);
-    torch::Tensor uniqueVals = std::get<0>(uniqueResult);
-    torch::Tensor inverseIndices = std::get<1>(uniqueResult);
-    coeffIntFlatten = inverseIndices;
+    std::vector<at::Tensor> inverse_parts;
+    std::vector<at::Tensor> unique_parts;
+    int64_t chunk_size = 1LL << 30;
+    int64_t numel = coeffIntFlatten.numel();
+    int64_t offset = 0;
 
+    for (int64_t start = 0; start < numel; start += chunk_size) {
+        int64_t current_chunk_size = std::min(chunk_size , numel - start);
+        auto chunk = coeffIntFlatten.narrow(0 , start , current_chunk_size);
+        auto partial_unique = at::_unique(chunk , true , true);
+
+        unique_parts.push_back(std::get<0>(partial_unique));
+
+        auto inv = std::get<1>(partial_unique) + offset;
+        inverse_parts.push_back(inv);
+        offset += std::get<0>(partial_unique).size(0);
+    }
+
+    coeffIntFlatten = torch::Tensor();
+#ifdef USE_CUDA
     cleanupGPUMemory();
+#endif
+
+    torch::Tensor all_uniques = torch::cat(unique_parts , 0);
+    unique_parts.clear();
+    unique_parts.shrink_to_fit();
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
+
+    torch::Tensor all_inverses = torch::cat(inverse_parts , 0);
+    inverse_parts.clear();
+    inverse_parts.shrink_to_fit();
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
+
+    auto final_unique = at::_unique(all_uniques , true , true);
+    torch::Tensor uniqueVals = std::get<0>(final_unique);
+    torch::Tensor remap = std::get<1>(final_unique);
+    all_uniques = torch::Tensor();
+
+    torch::Tensor inverseIndices = remap.index_select(0 , all_inverses);
+    remap = torch::Tensor();
+    all_inverses = torch::Tensor();
+
+    mainData.coeffInt = inverseIndices;
+
+#ifdef USE_CUDA
+    cleanupGPUMemory();
+#endif
 
     auto prefixResult = indexMaskPrefix(mask);
-    torch::Tensor prefixMaskFlatten = prefixResult.first;
-    torch::Tensor maskLength = prefixResult.second;
+    mainData.prefixMask = prefixResult.first;
+    mainData.maskLength = prefixResult.second;
 
     mask = torch::Tensor();
+#ifdef USE_CUDA
     cleanupGPUMemory();
+#endif
 
     MetaData metaData;
-    metaData.pcaBasis = pcaBasis;
-    metaData.uniqueVals = uniqueVals;
-    metaData.quanBin = quanBin_;
-    metaData.nVec = processMask.size(0);
-    metaData.prefixLength = prefixMaskFlatten.size(0);
-
-    MainData mainData;
     metaData.GAE_correction_occur = true;
-    mainData.processMask = processMask;
-    mainData.prefixMask = prefixMaskFlatten;
-    mainData.maskLength = maskLength;
-    mainData.coeffInt = coeffIntFlatten;
+    metaData.pcaBasis = pcaBasis.to(torch::kFloat32).to(device_);
+    metaData.uniqueVals = uniqueVals.to(device_);
+    metaData.quanBin = quanBin_;
+    metaData.nVec = mainData.processMask.size(0);
+    metaData.prefixLength = mainData.prefixMask.size(0);
 
+    pcaBasis = torch::Tensor();
+    uniqueVals = torch::Tensor();
+
+    std::cout << "made it to compress Lossless\n";
     auto compressResult = compressLossless(metaData , mainData);
+    std::cout << "finished compress lossless\n";
     metaData.dataBytes = compressResult.second;
 
     return { metaData, std::move(compressResult.first), compressResult.second };
 }
-
 
 torch::Tensor PCACompressor::decompress(const torch::Tensor& reconsData ,
     const MetaData& metaData ,
     const CompressedData& compressedData) {
 
     if (metaData.dataBytes == 0 || metaData.pcaBasis.numel() == 0) {
-        return reconsData.clone();
+        return reconsData;
     }
+
     auto inputShape = reconsData.sizes();
-    torch::Tensor reconsDevice = reconsData.clone().to(device_);
+
+    torch::Tensor reconsDevice = reconsData.to(device_);
 
     bool needsReshape = (inputShape.size() != 2);
     if (needsReshape) {
         reconsDevice = block2Vector(reconsDevice , patchSize_);
     }
+
     MainData mainData = decompressLossless(metaData , compressedData);
 
     torch::Tensor indexMask = indexMaskReverse(mainData.prefixMask ,
@@ -469,32 +563,35 @@ torch::Tensor PCACompressor::decompress(const torch::Tensor& reconsData ,
     torch::Tensor coeffInt = metaData.uniqueVals.index({ mainData.coeffInt.to(torch::kLong) });
 
     torch::Tensor coeff = torch::zeros(indexMask.sizes() ,
-        torch::TensorOptions().dtype(metaData.pcaBasis.dtype()).device(device_));
+        torch::TensorOptions().dtype(torch::kFloat32).device(device_));
 
     coeff.masked_scatter_(indexMask , coeffInt * metaData.quanBin);
+    coeffInt = torch::Tensor();
+    indexMask = torch::Tensor();
 
-    torch::Tensor pcaReconstruction = torch::matmul(coeff , metaData.pcaBasis);
+    torch::Tensor pcaReconstruction = torch::matmul(coeff , metaData.pcaBasis.to(torch::kFloat32));
+    coeff = torch::Tensor();
 
-    torch::Tensor reconsSubset = reconsDevice.index({ mainData.processMask });
-    reconsSubset = reconsSubset + pcaReconstruction;
-
-    reconsDevice.index_put_({ mainData.processMask } , reconsSubset);
+    reconsDevice.index_put_({ mainData.processMask } ,
+        reconsDevice.index({ mainData.processMask }) + pcaReconstruction);
+    pcaReconstruction = torch::Tensor();
 
     if (needsReshape) {
         reconsDevice = vector2Block(reconsDevice , inputShape.vec() , patchSize_);
     }
 
-    return reconsDevice.cpu();
+    return reconsDevice;
 }
 
 std::pair<std::unique_ptr<CompressedData> , int64_t>
 PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainData)
 {
+    // auto start = get_start_time();
     auto compressedData = std::make_unique<CompressedData>();
     int64_t totalBytes = 0;
 
-    auto processMaskBytes = BitUtils::bitsToBytes(mainData.processMask.to(torch::kUInt8).cpu());
-    auto prefixMaskBytes = BitUtils::bitsToBytes(mainData.prefixMask.to(torch::kUInt8).cpu());
+    auto processMaskBytes = BitUtils::bitsToBytes(mainData.processMask.to(torch::kUInt8));
+    auto prefixMaskBytes = BitUtils::bitsToBytes(mainData.prefixMask.to(torch::kUInt8));
     auto maskLengthBytes = serializeTensor(mainData.maskLength);
 
     torch::Tensor coeffIntConverted;
@@ -507,115 +604,197 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
         coeffIntConverted = mainData.coeffInt.to(torch::kInt32);
     auto coeffIntBytes = serializeTensor(coeffIntConverted);
 
-    const int compressionLevel = 21;
+    const int compressionLevel = 3;
 
-    bool use_gpu = false;
+    size_t raw_process_mask_bytes = 0;
+    size_t raw_prefix_mask_bytes  = 0;
+    size_t raw_mask_length_bytes  = 0;
+    size_t raw_coeff_int_bytes    = 0;
+    
+    bool use_nvcomp = false;
+// #if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+//     use_nvcomp = device_.is_cuda();
+// #endif
+    
+std::cout << "USE_CUDA="
 #ifdef USE_CUDA
-    use_gpu = mainData.coeffInt.is_cuda();
+          << 1
+#else
+          << 0
 #endif
-
+          << " ENABLE_NVCOMP="
+#ifdef ENABLE_NVCOMP
+          << 1
+#else
+          << 0
+#endif
+          << " is_cuda=" << device_.is_cuda() << "\n";
     std::vector<uint8_t> processMaskCompressed , prefixMaskCompressed , maskLengthCompressed , coeffIntCompressed;
     std::vector<size_t> compressedSizes;
 
-#ifdef USE_CUDA
-    if (use_gpu)
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+    if (use_nvcomp)
     {
-
         auto gpu_compress = [&](const std::vector<uint8_t>& input) -> std::vector<uint8_t>
             {
                 if (input.empty()) return {};
 
-                const size_t num_chunks = 1;
+                const size_t MAX_CHUNK_SIZE = 256 * 1024 * 1024; // 256 MB chunks
                 const size_t input_bytes = input.size();
+                size_t num_chunks = (input_bytes + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE;
+
+                if (num_chunks > 1) {
+                    std::cout << "[DEBUG] Splitting " << input_bytes / (1024.0 * 1024.0 * 1024.0)
+                        << " GiB into " << num_chunks << " chunks of max "
+                        << MAX_CHUNK_SIZE / (1024.0 * 1024.0) << " MB\n";
+                }
 
                 cudaStream_t stream;
                 CHECK_CUDA(cudaStreamCreate(&stream));
 
-                void* d_input = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_input , input_bytes));
-                CHECK_CUDA(cudaMemcpyAsync(d_input , input.data() , input_bytes , cudaMemcpyHostToDevice , stream));
-
-                void** d_inputs = nullptr;
-                size_t* d_input_sizes = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_inputs , sizeof(void*)));
-                CHECK_CUDA(cudaMalloc(&d_input_sizes , sizeof(size_t)));
-                CHECK_CUDA(cudaMemcpyAsync(d_inputs , &d_input , sizeof(void*) , cudaMemcpyHostToDevice , stream));
-                CHECK_CUDA(cudaMemcpyAsync(d_input_sizes , &input_bytes , sizeof(size_t) , cudaMemcpyHostToDevice , stream));
-
+                std::vector<size_t> h_input_sizes(num_chunks);
+                std::vector<size_t> h_output_sizes(num_chunks);
+                std::vector<std::vector<uint8_t>> compressed_chunks(num_chunks);
 
                 nvcompBatchedZstdCompressOpts_t comp_opts{};
-                size_t temp_bytes = 0;
-                CHECK_NVCOMP(nvcompBatchedZstdCompressGetTempSizeAsync(
-                    num_chunks ,
-                    input_bytes ,
-                    comp_opts ,
-                    &temp_bytes ,
-                    input_bytes));
 
-                size_t max_out_bytes = 0;
-                CHECK_NVCOMP(nvcompBatchedZstdCompressGetMaxOutputChunkSize(input_bytes , comp_opts , &max_out_bytes));
+                // Process each chunk independently to avoid huge memory allocation
+                for (size_t chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++) {
+                    size_t offset = chunk_idx * MAX_CHUNK_SIZE;
+                    size_t chunk_size = std::min(MAX_CHUNK_SIZE , input_bytes - offset);
+                    h_input_sizes[chunk_idx] = chunk_size;
 
-                void* d_temp = nullptr;
-                if (temp_bytes > 0) CHECK_CUDA(cudaMalloc(&d_temp , temp_bytes));
+                    // Allocate GPU memory for this chunk only
+                    void* d_input = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_input , chunk_size));
+                    CHECK_CUDA(cudaMemcpyAsync(d_input , input.data() + offset , chunk_size ,
+                        cudaMemcpyHostToDevice , stream));
 
-                void* d_output = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_output , max_out_bytes));
+                    void** d_inputs = nullptr;
+                    size_t* d_input_sizes = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_inputs , sizeof(void*)));
+                    CHECK_CUDA(cudaMalloc(&d_input_sizes , sizeof(size_t)));
+                    CHECK_CUDA(cudaMemcpyAsync(d_inputs , &d_input , sizeof(void*) ,
+                        cudaMemcpyHostToDevice , stream));
+                    CHECK_CUDA(cudaMemcpyAsync(d_input_sizes , &chunk_size , sizeof(size_t) ,
+                        cudaMemcpyHostToDevice , stream));
 
-                void** d_outputs = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_outputs , sizeof(void*)));
-                CHECK_CUDA(cudaMemcpyAsync(d_outputs , &d_output , sizeof(void*) , cudaMemcpyHostToDevice , stream));
+                    size_t temp_bytes = 0;
+                    CHECK_NVCOMP(nvcompBatchedZstdCompressGetTempSizeAsync(
+                        1 , chunk_size , comp_opts , &temp_bytes , chunk_size));
 
-                size_t* d_output_sizes = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_output_sizes , sizeof(size_t)));
+                    size_t max_out_bytes = 0;
+                    CHECK_NVCOMP(nvcompBatchedZstdCompressGetMaxOutputChunkSize(
+                        chunk_size , comp_opts , &max_out_bytes));
 
-                nvcompStatus_t* d_statuses = nullptr;
-                CHECK_CUDA(cudaMalloc(&d_statuses , sizeof(nvcompStatus_t)));
+                    void* d_temp = nullptr;
+                    if (temp_bytes > 0) CHECK_CUDA(cudaMalloc(&d_temp , temp_bytes));
 
-                CHECK_NVCOMP(nvcompBatchedZstdCompressAsync(
-                    (const void* const*)d_inputs ,
-                    d_input_sizes ,
-                    input_bytes ,
-                    num_chunks ,
-                    d_temp ,
-                    temp_bytes ,
-                    (void* const*)d_outputs ,
-                    d_output_sizes ,
-                    comp_opts ,
-                    d_statuses ,
-                    stream));
+                    void* d_output = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_output , max_out_bytes));
 
-                CHECK_CUDA(cudaStreamSynchronize(stream));
+                    void** d_outputs = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_outputs , sizeof(void*)));
+                    CHECK_CUDA(cudaMemcpyAsync(d_outputs , &d_output , sizeof(void*) ,
+                        cudaMemcpyHostToDevice , stream));
 
-                nvcompStatus_t h_status{};
-                CHECK_CUDA(cudaMemcpy(&h_status , d_statuses , sizeof(nvcompStatus_t) , cudaMemcpyDeviceToHost));
-                if (h_status != nvcompSuccess)
-                    throw std::runtime_error("nvcompBatchedZstdCompressAsync status != nvcompSuccess");
+                    size_t* d_output_size = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_output_size , sizeof(size_t)));
 
-                size_t comp_bytes = 0;
-                CHECK_CUDA(cudaMemcpy(&comp_bytes , d_output_sizes , sizeof(size_t) , cudaMemcpyDeviceToHost));
+                    nvcompStatus_t* d_status = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_status , sizeof(nvcompStatus_t)));
 
-                std::vector<uint8_t> output(comp_bytes);
-                if (comp_bytes > 0)
-                    CHECK_CUDA(cudaMemcpy(output.data() , d_output , comp_bytes , cudaMemcpyDeviceToHost));
+                    CHECK_NVCOMP(nvcompBatchedZstdCompressAsync(
+                        (const void* const*)d_inputs ,
+                        d_input_sizes ,
+                        chunk_size ,
+                        1 ,
+                        d_temp ,
+                        temp_bytes ,
+                        (void* const*)d_outputs ,
+                        d_output_size ,
+                        comp_opts ,
+                        d_status ,
+                        stream));
 
-                cudaFree(d_input);
-                cudaFree(d_inputs);
-                cudaFree(d_input_sizes);
-                cudaFree(d_outputs);
-                cudaFree(d_output_sizes);
-                if (d_temp) cudaFree(d_temp);
-                cudaFree(d_output);
-                cudaFree(d_statuses);
+                    CHECK_CUDA(cudaStreamSynchronize(stream));
+
+                    nvcompStatus_t h_status;
+                    CHECK_CUDA(cudaMemcpy(&h_status , d_status , sizeof(nvcompStatus_t) ,
+                        cudaMemcpyDeviceToHost));
+                    if (h_status != nvcompSuccess)
+                        throw std::runtime_error("Chunk " + std::to_string(chunk_idx) + " compression failed");
+
+                    size_t compressed_size;
+                    CHECK_CUDA(cudaMemcpy(&compressed_size , d_output_size , sizeof(size_t) ,
+                        cudaMemcpyDeviceToHost));
+                    h_output_sizes[chunk_idx] = compressed_size;
+
+                    compressed_chunks[chunk_idx].resize(compressed_size);
+                    CHECK_CUDA(cudaMemcpy(compressed_chunks[chunk_idx].data() , d_output ,
+                        compressed_size , cudaMemcpyDeviceToHost));
+
+                    cudaFree(d_input);
+                    cudaFree(d_inputs);
+                    cudaFree(d_input_sizes);
+                    cudaFree(d_output);
+                    cudaFree(d_outputs);
+                    cudaFree(d_output_size);
+                    if (d_temp) cudaFree(d_temp);
+                    cudaFree(d_status);
+
+                    std::cout << "[DEBUG] Chunk " << chunk_idx + 1 << "/" << num_chunks
+                        << " compressed: " << chunk_size / (1024.0 * 1024.0) << " MB -> "
+                        << compressed_size / (1024.0 * 1024.0) << " MB\n";
+                }
+
                 cudaStreamDestroy(stream);
+
+                std::vector<uint8_t> output;
+
+                if (num_chunks > 1) {
+                    for (int i = 0; i < 8; ++i) {
+                        output.push_back((num_chunks >> (i * 8)) & 0xFF);
+                    }
+
+                    for (size_t i = 0; i < num_chunks; i++) {
+                        size_t uncompressed_chunk_size = h_input_sizes[i];
+                        for (int j = 0; j < 8; ++j) {
+                            output.push_back((uncompressed_chunk_size >> (j * 8)) & 0xFF);
+                        }
+                    }
+
+                    for (size_t chunk_size : h_output_sizes) {
+                        for (int j = 0; j < 8; ++j) {
+                            output.push_back((chunk_size >> (j * 8)) & 0xFF);
+                        }
+                    }
+                }
+
+                for (size_t i = 0; i < num_chunks; i++) {
+                    output.insert(output.end() ,
+                        compressed_chunks[i].begin() ,
+                        compressed_chunks[i].end());
+                }
 
                 return output;
             };
 
+        std::cout << "[GAE Coeff Compression] NVCOMP ZSTD is used\n";
         processMaskCompressed = gpu_compress(processMaskBytes);
+        raw_process_mask_bytes = processMaskBytes.size();
+        processMaskBytes.clear();
+        processMaskBytes.shrink_to_fit();
         prefixMaskCompressed = gpu_compress(prefixMaskBytes);
+        raw_prefix_mask_bytes  = prefixMaskBytes.size();
+        prefixMaskBytes.clear();
+        prefixMaskBytes.shrink_to_fit();
         maskLengthCompressed = gpu_compress(maskLengthBytes);
+        raw_mask_length_bytes  = maskLengthBytes.size();
+        maskLengthBytes.clear();
+        maskLengthBytes.shrink_to_fit();
         coeffIntCompressed = gpu_compress(coeffIntBytes);
-
+        raw_coeff_int_bytes    = coeffIntBytes.size();
         compressedSizes = {
             processMaskCompressed.size(),
             prefixMaskCompressed.size(),
@@ -625,47 +804,134 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
     }
 #endif
 
-    if (!use_gpu)
+//     if (!use_nvcomp)
+//     {
+//         std::cout << "[GAE Coeff Compression] CPU ZSTD is used\n";
+//         size_t processMaskBound = ZSTD_compressBound(processMaskBytes.size());
+//         processMaskCompressed.resize(processMaskBound);
+//         size_t processMaskCompSize = ZSTD_compress(
+//             processMaskCompressed.data() , processMaskCompressed.size() ,
+//             processMaskBytes.data() , processMaskBytes.size() ,
+//             compressionLevel);
+//         processMaskBytes.clear();
+//         processMaskBytes.shrink_to_fit();
+//         if (ZSTD_isError(processMaskCompSize))
+//             throw std::runtime_error("process_mask compression failed");
+//         processMaskCompressed.resize(processMaskCompSize);
+
+//         size_t prefixMaskBound = ZSTD_compressBound(prefixMaskBytes.size());
+//         prefixMaskCompressed.resize(prefixMaskBound);
+//         size_t prefixMaskCompSize = ZSTD_compress(
+//             prefixMaskCompressed.data() , prefixMaskCompressed.size() ,
+//             prefixMaskBytes.data() , prefixMaskBytes.size() ,
+//             compressionLevel);
+//         prefixMaskBytes.clear();
+//         prefixMaskBytes.shrink_to_fit();
+//         if (ZSTD_isError(prefixMaskCompSize))
+//             throw std::runtime_error("prefix_mask compression failed");
+//         prefixMaskCompressed.resize(prefixMaskCompSize);
+
+//         size_t maskLengthBound = ZSTD_compressBound(maskLengthBytes.size());
+//         maskLengthCompressed.resize(maskLengthBound);
+//         size_t maskLengthCompSize = ZSTD_compress(
+//             maskLengthCompressed.data() , maskLengthCompressed.size() ,
+//             maskLengthBytes.data() , maskLengthBytes.size() ,
+//             compressionLevel);
+//         maskLengthBytes.clear();
+//         maskLengthBytes.shrink_to_fit();
+//         if (ZSTD_isError(maskLengthCompSize))
+//             throw std::runtime_error("mask_length compression failed");
+//         maskLengthCompressed.resize(maskLengthCompSize);
+
+//         size_t coeffIntBound = ZSTD_compressBound(coeffIntBytes.size());
+//         coeffIntCompressed.resize(coeffIntBound);
+//         size_t coeffIntCompSize = ZSTD_compress(
+//             coeffIntCompressed.data() , coeffIntCompressed.size() ,
+//             coeffIntBytes.data() , coeffIntBytes.size() ,
+//             compressionLevel);
+//         if (ZSTD_isError(coeffIntCompSize))
+//             throw std::runtime_error("coeff_int compression failed");
+//         coeffIntCompressed.resize(coeffIntCompSize);
+
+//         compressedSizes = {
+//             processMaskCompSize,
+//             prefixMaskCompSize,
+//             maskLengthCompSize,
+//             coeffIntCompSize
+//         };
+//     }
+    if (!use_nvcomp)
     {
-        size_t processMaskBound = ZSTD_compressBound(processMaskBytes.size());
-        processMaskCompressed.resize(processMaskBound);
-        size_t processMaskCompSize = ZSTD_compress(
-            processMaskCompressed.data() , processMaskCompressed.size() ,
-            processMaskBytes.data() , processMaskBytes.size() ,
-            compressionLevel);
-        if (ZSTD_isError(processMaskCompSize))
-            throw std::runtime_error("process_mask compression failed");
-        processMaskCompressed.resize(processMaskCompSize);
+        std::cout << "[GAE Coeff Compression] CPU ZSTD is used (zstdmt)\n";
 
-        size_t prefixMaskBound = ZSTD_compressBound(prefixMaskBytes.size());
-        prefixMaskCompressed.resize(prefixMaskBound);
-        size_t prefixMaskCompSize = ZSTD_compress(
-            prefixMaskCompressed.data() , prefixMaskCompressed.size() ,
-            prefixMaskBytes.data() , prefixMaskBytes.size() ,
-            compressionLevel);
-        if (ZSTD_isError(prefixMaskCompSize))
-            throw std::runtime_error("prefix_mask compression failed");
-        prefixMaskCompressed.resize(prefixMaskCompSize);
+        // --- helper: single-buffer zstd multithread compression ---
+        // workers=10 means zstd internally splits the input into jobs and compresses in parallel
+        auto zstd_compress_mt = [&](const std::vector<uint8_t>& in,
+                                    std::vector<uint8_t>& out,
+                                    int level,
+                                    int workers) -> size_t
+        {
+            if (in.empty()) {
+                out.clear();
+                return 0;
+            }
 
-        size_t maskLengthBound = ZSTD_compressBound(maskLengthBytes.size());
-        maskLengthCompressed.resize(maskLengthBound);
-        size_t maskLengthCompSize = ZSTD_compress(
-            maskLengthCompressed.data() , maskLengthCompressed.size() ,
-            maskLengthBytes.data() , maskLengthBytes.size() ,
-            compressionLevel);
-        if (ZSTD_isError(maskLengthCompSize))
-            throw std::runtime_error("mask_length compression failed");
-        maskLengthCompressed.resize(maskLengthCompSize);
+            // sanity: require zstd >= 1.4.0 for ZSTD_c_nbWorkers
+            #if !defined(ZSTD_VERSION_NUMBER) || (ZSTD_VERSION_NUMBER < 10400)
+                throw std::runtime_error("zstd too old: need >= 1.4.0 for multithread (ZSTD_c_nbWorkers)");
+            #endif
 
-        size_t coeffIntBound = ZSTD_compressBound(coeffIntBytes.size());
-        coeffIntCompressed.resize(coeffIntBound);
-        size_t coeffIntCompSize = ZSTD_compress(
-            coeffIntCompressed.data() , coeffIntCompressed.size() ,
-            coeffIntBytes.data() , coeffIntBytes.size() ,
-            compressionLevel);
-        if (ZSTD_isError(coeffIntCompSize))
-            throw std::runtime_error("coeff_int compression failed");
-        coeffIntCompressed.resize(coeffIntCompSize);
+            ZSTD_CCtx* cctx = ZSTD_createCCtx();
+            if (!cctx) throw std::runtime_error("ZSTD_createCCtx failed");
+
+            // enable multithread
+            size_t s1 = ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, workers);
+            if (ZSTD_isError(s1)) {
+                ZSTD_freeCCtx(cctx);
+                throw std::runtime_error(std::string("ZSTD_c_nbWorkers set failed: ") + ZSTD_getErrorName(s1));
+            }
+
+            // set compression level
+            size_t s2 = ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, level);
+            if (ZSTD_isError(s2)) {
+                ZSTD_freeCCtx(cctx);
+                throw std::runtime_error(std::string("ZSTD_c_compressionLevel set failed: ") + ZSTD_getErrorName(s2));
+            }
+
+            // allocate output
+            size_t bound = ZSTD_compressBound(in.size());
+            out.resize(bound);
+
+            // compress
+            size_t compSize = ZSTD_compress2(cctx, out.data(), out.size(), in.data(), in.size());
+
+            ZSTD_freeCCtx(cctx);
+
+            if (ZSTD_isError(compSize)) {
+                throw std::runtime_error(std::string("zstd compress2 failed: ") + ZSTD_getErrorName(compSize));
+            }
+
+            out.resize(compSize);
+            return compSize;
+        };
+
+        const int workers = 10;  // you asked "split into 10 parts"
+
+        size_t processMaskCompSize = zstd_compress_mt(processMaskBytes, processMaskCompressed, compressionLevel, workers);
+        size_t prefixMaskCompSize  = zstd_compress_mt(prefixMaskBytes,  prefixMaskCompressed,  compressionLevel, workers);
+        size_t maskLengthCompSize  = zstd_compress_mt(maskLengthBytes,  maskLengthCompressed,  compressionLevel, workers);
+        size_t coeffIntCompSize    = zstd_compress_mt(coeffIntBytes,    coeffIntCompressed,    compressionLevel, workers);
+        
+        raw_process_mask_bytes = processMaskBytes.size();
+        raw_prefix_mask_bytes  = prefixMaskBytes.size();
+        raw_mask_length_bytes  = maskLengthBytes.size();
+        raw_coeff_int_bytes    = coeffIntBytes.size();
+        
+        // free raw buffers after compression finished
+        processMaskBytes.clear(); processMaskBytes.shrink_to_fit();
+        prefixMaskBytes.clear();  prefixMaskBytes.shrink_to_fit();
+        maskLengthBytes.clear();  maskLengthBytes.shrink_to_fit();
+        coeffIntBytes.clear();    coeffIntBytes.shrink_to_fit();
 
         compressedSizes = {
             processMaskCompSize,
@@ -675,6 +941,33 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
         };
     }
 
+    std::cout << "meta_pca_basis_bytes      : "
+              << (metaData.pcaBasis.numel() * metaData.pcaBasis.element_size()) << "\n";
+    std::cout << "meta_unique_vals_bytes    : "
+              << (metaData.uniqueVals.numel() * metaData.uniqueVals.element_size()) << "\n";
+
+    // ====== comp bytes (压缩后) ======
+    size_t comp_process_mask_bytes = processMaskCompressed.size();
+    size_t comp_prefix_mask_bytes  = prefixMaskCompressed.size();
+    size_t comp_mask_length_bytes  = maskLengthCompressed.size();
+    size_t comp_coeff_int_bytes    = coeffIntCompressed.size();
+
+    auto CR = [](size_t rawb, size_t compb) -> double {
+        return compb ? (double)rawb / (double)compb : 0.0;
+    };
+
+    std::cout << "comp_process_mask_bytes   : " << comp_process_mask_bytes
+              << "  (raw=" << raw_process_mask_bytes
+              << ", CR=" << CR(raw_process_mask_bytes, comp_process_mask_bytes) << ")\n";
+    std::cout << "comp_prefix_mask_bytes    : " << comp_prefix_mask_bytes
+              << "  (raw=" << raw_prefix_mask_bytes
+              << ", CR=" << CR(raw_prefix_mask_bytes,  comp_prefix_mask_bytes)  << ")\n";
+    std::cout << "comp_mask_length_bytes    : " << comp_mask_length_bytes
+              << "  (raw=" << raw_mask_length_bytes
+              << ", CR=" << CR(raw_mask_length_bytes,  comp_mask_length_bytes)  << ")\n";
+    std::cout << "comp_coeff_int_bytes      : " << comp_coeff_int_bytes
+              << "  (raw=" << raw_coeff_int_bytes
+              << ", CR=" << CR(raw_coeff_int_bytes,    comp_coeff_int_bytes)    << ")\n";
     for (size_t size : compressedSizes) {
         for (int i = 0; i < 8; ++i) {
             compressedData->data.push_back((size >> (i * 8)) & 0xFF);
@@ -690,9 +983,13 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
     compressedData->data.insert(compressedData->data.end() ,
         coeffIntCompressed.begin() , coeffIntCompressed.end());
 
-    compressedData->coeffIntBytes = coeffIntBytes.size();
+    // compressedData->coeffIntBytes = coeffIntBytes.size();
+    compressedData->coeffIntBytes = raw_coeff_int_bytes;
     totalBytes = compressedData->data.size();
     compressedData->dataBytes = totalBytes;
+
+    // auto end = get_time(start);
+    // std::cout << "Time spent in comrpesslossess: " << end.count() << " s\n";
 
     return { std::move(compressedData), totalBytes };
 }
@@ -700,9 +997,18 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
 MainData PCACompressor::decompressLossless(
     const MetaData& metaData , const CompressedData& compressedData)
 {
+    // auto start = get_start_time(); 
     MainData mainData;
     size_t offset = 0;
 
+    #define CHECK_ZSTD_BLOCK(name, off, csz) do { \
+      if ((off) + (csz) > compressedData.data.size()) \
+        throw std::runtime_error(std::string("OOB block: ") + (name)); \
+      const uint8_t* p = compressedData.data.data() + (off); \
+      std::printf("[DBG] %s off=%zu csz=%zu magic=%02x %02x %02x %02x\n", \
+                  (name), (size_t)(off), (size_t)(csz), p[0], p[1], p[2], p[3]); \
+    } while(0)
+    
     std::vector<size_t> compressedSizes(4);
     for (int i = 0; i < 4; ++i) {
         size_t size = 0;
@@ -711,32 +1017,195 @@ MainData PCACompressor::decompressLossless(
         compressedSizes[i] = size;
     }
 
-    bool use_gpu = false;
-#ifdef USE_CUDA
-    use_gpu = device_.is_cuda();
-#endif
+    //** JL modified **//
+    // ZSTD is on GPU only if nvcomp is enabled
+    bool use_nvcomp = false;
+// #if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+//     use_nvcomp = device_.is_cuda();
+// #endif
 
-#ifdef USE_CUDA
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
 
     auto gpu_decompress = [&](const uint8_t* comp_ptr , size_t comp_size , size_t decomp_size) -> std::vector<uint8_t>
         {
             if (comp_size == 0 || decomp_size == 0)
                 return {};
 
+            size_t num_chunks = 1;
+            std::vector<size_t> chunk_uncompressed_sizes;
+            std::vector<size_t> chunk_compressed_sizes;
+            const uint8_t* actual_comp_ptr = comp_ptr;
+            size_t actual_comp_size = comp_size;
+
+            if (comp_size >= 16) {
+                size_t potential_chunk_count = 0;
+                for (int i = 0; i < 8; ++i) {
+                    potential_chunk_count |= (size_t)comp_ptr[i] << (i * 8);
+                }
+
+                // If chunk count looks reasonable (> 1 and metadata fits in comp_size)
+                // Metadata: 8 bytes (num_chunks) + 8*num_chunks (uncompressed sizes) + 8*num_chunks (compressed sizes)
+                size_t metadata_size = 8 + potential_chunk_count * 8 + potential_chunk_count * 8;
+                if (potential_chunk_count > 1 && potential_chunk_count < 1000 && metadata_size < comp_size) {
+                    num_chunks = potential_chunk_count;
+
+                    chunk_uncompressed_sizes.resize(num_chunks);
+                    size_t meta_offset = 8;
+                    for (size_t i = 0; i < num_chunks; i++) {
+                        size_t chunk_size = 0;
+                        for (int j = 0; j < 8; ++j) {
+                            chunk_size |= (size_t)comp_ptr[meta_offset++] << (j * 8);
+                        }
+                        chunk_uncompressed_sizes[i] = chunk_size;
+                    }
+
+                    chunk_compressed_sizes.resize(num_chunks);
+                    for (size_t i = 0; i < num_chunks; i++) {
+                        size_t chunk_size = 0;
+                        for (int j = 0; j < 8; ++j) {
+                            chunk_size |= (size_t)comp_ptr[meta_offset++] << (j * 8);
+                        }
+                        chunk_compressed_sizes[i] = chunk_size;
+                    }
+
+                    // Verify total uncompressed size matches
+                    size_t total_uncompressed = 0;
+                    for (size_t size : chunk_uncompressed_sizes) {
+                        total_uncompressed += size;
+                    }
+
+                    if (total_uncompressed == decomp_size) {
+                        actual_comp_ptr = comp_ptr + metadata_size;
+                        actual_comp_size = comp_size - metadata_size;
+
+                        std::cout << "[DEBUG] Detected multi-chunk decompression: " << num_chunks << " chunks, total uncompressed: "
+                            << total_uncompressed << " bytes (expected: " << decomp_size << " bytes)\n";
+                    }
+                    else {
+                        std::cout << "[DEBUG] Size mismatch in multi-chunk detection (total: " << total_uncompressed
+                            << ", expected: " << decomp_size << "), treating as single chunk\n";
+                        num_chunks = 1;
+                        chunk_uncompressed_sizes.clear();
+                        chunk_compressed_sizes.clear();
+                    }
+                }
+            }
+
             cudaStream_t stream;
             CHECK_CUDA(cudaStreamCreate(&stream));
-            const size_t num_chunks = 1;
+
+            // For multi-chunk, we need to handle each chunk separately
+            // For multi-chunk, process each chunk sequentially to avoid OOM
+            if (num_chunks > 1) {
+                std::cout << "[DEBUG] Sequential multi-chunk decompression: " << num_chunks << " chunks\n";
+
+                std::vector<uint8_t> output(decomp_size);
+                size_t output_offset = 0;
+                size_t compressed_offset = 0;
+
+                cudaStream_t stream;
+                CHECK_CUDA(cudaStreamCreate(&stream));
+
+                // Process each chunk individually
+                for (size_t chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++) {
+                    size_t chunk_comp_size = chunk_compressed_sizes[chunk_idx];
+                    size_t chunk_decomp_size = chunk_uncompressed_sizes[chunk_idx];
+
+                    // Allocate for this chunk only
+                    void* d_comp_input = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_comp_input , chunk_comp_size));
+                    CHECK_CUDA(cudaMemcpyAsync(d_comp_input , actual_comp_ptr + compressed_offset ,
+                        chunk_comp_size , cudaMemcpyHostToDevice , stream));
+
+                    void** d_inputs = nullptr;
+                    size_t* d_input_sizes = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_inputs , sizeof(void*)));
+                    CHECK_CUDA(cudaMalloc(&d_input_sizes , sizeof(size_t)));
+                    CHECK_CUDA(cudaMemcpyAsync(d_inputs , &d_comp_input , sizeof(void*) ,
+                        cudaMemcpyHostToDevice , stream));
+                    CHECK_CUDA(cudaMemcpyAsync(d_input_sizes , &chunk_comp_size , sizeof(size_t) ,
+                        cudaMemcpyHostToDevice , stream));
+
+                    void* d_output = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_output , chunk_decomp_size));
+
+                    void** d_outputs = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_outputs , sizeof(void*)));
+                    CHECK_CUDA(cudaMemcpyAsync(d_outputs , &d_output , sizeof(void*) ,
+                        cudaMemcpyHostToDevice , stream));
+
+                    size_t* d_output_sizes = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_output_sizes , sizeof(size_t)));
+                    CHECK_CUDA(cudaMemcpyAsync(d_output_sizes , &chunk_decomp_size , sizeof(size_t) ,
+                        cudaMemcpyHostToDevice , stream));
+
+                    nvcompBatchedZstdDecompressOpts_t decomp_opts{};
+                    size_t temp_bytes = 0;
+                    CHECK_NVCOMP(nvcompBatchedZstdDecompressGetTempSizeAsync(
+                        1 , chunk_decomp_size , decomp_opts , &temp_bytes , chunk_decomp_size));
+
+                    void* d_temp = nullptr;
+                    if (temp_bytes > 0) CHECK_CUDA(cudaMalloc(&d_temp , temp_bytes));
+
+                    nvcompStatus_t* d_status = nullptr;
+                    CHECK_CUDA(cudaMalloc(&d_status , sizeof(nvcompStatus_t)));
+
+                    CHECK_NVCOMP(nvcompBatchedZstdDecompressAsync(
+                        (const void* const*)d_inputs ,
+                        d_input_sizes ,
+                        d_output_sizes ,
+                        d_output_sizes ,
+                        1 ,
+                        d_temp , temp_bytes ,
+                        (void* const*)d_outputs ,
+                        decomp_opts ,
+                        d_status ,
+                        stream));
+
+                    CHECK_CUDA(cudaStreamSynchronize(stream));
+
+                    nvcompStatus_t h_status;
+                    CHECK_CUDA(cudaMemcpy(&h_status , d_status , sizeof(nvcompStatus_t) ,
+                        cudaMemcpyDeviceToHost));
+                    if (h_status != nvcompSuccess)
+                        throw std::runtime_error("Chunk " + std::to_string(chunk_idx) + " decompression failed");
+
+                    CHECK_CUDA(cudaMemcpy(output.data() + output_offset , d_output ,
+                        chunk_decomp_size , cudaMemcpyDeviceToHost));
+
+                    cudaFree(d_comp_input);
+                    cudaFree(d_inputs);
+                    cudaFree(d_input_sizes);
+                    cudaFree(d_output);
+                    cudaFree(d_outputs);
+                    cudaFree(d_output_sizes);
+                    if (d_temp) cudaFree(d_temp);
+                    cudaFree(d_status);
+
+                    output_offset += chunk_decomp_size;
+                    compressed_offset += chunk_comp_size;
+
+                    if ((chunk_idx + 1) % 10 == 0 || chunk_idx == num_chunks - 1) {
+                        std::cout << "[DEBUG] Decompressed chunk " << chunk_idx + 1 << "/" << num_chunks << "\n";
+                    }
+                }
+
+                cudaStreamDestroy(stream);
+                // auto end = get_time(start);
+                // std::cout << "End of decomrpesslosssess: " << end.count() << " s\n";
+                return output;
+            }
 
             void* d_input = nullptr;
-            CHECK_CUDA(cudaMalloc(&d_input , comp_size));
-            CHECK_CUDA(cudaMemcpyAsync(d_input , comp_ptr , comp_size , cudaMemcpyHostToDevice , stream));
+            CHECK_CUDA(cudaMalloc(&d_input , actual_comp_size));
+            CHECK_CUDA(cudaMemcpyAsync(d_input , actual_comp_ptr , actual_comp_size , cudaMemcpyHostToDevice , stream));
 
             void** d_inputs = nullptr;
             size_t* d_input_sizes = nullptr;
             CHECK_CUDA(cudaMalloc(&d_inputs , sizeof(void*)));
             CHECK_CUDA(cudaMalloc(&d_input_sizes , sizeof(size_t)));
             CHECK_CUDA(cudaMemcpyAsync(d_inputs , &d_input , sizeof(void*) , cudaMemcpyHostToDevice , stream));
-            CHECK_CUDA(cudaMemcpyAsync(d_input_sizes , &comp_size , sizeof(size_t) , cudaMemcpyHostToDevice , stream));
+            CHECK_CUDA(cudaMemcpyAsync(d_input_sizes , &actual_comp_size , sizeof(size_t) , cudaMemcpyHostToDevice , stream));
 
             void* d_output = nullptr;
             CHECK_CUDA(cudaMalloc(&d_output , decomp_size));
@@ -765,16 +1234,16 @@ MainData PCACompressor::decompressLossless(
             CHECK_CUDA(cudaMalloc(&d_statuses , sizeof(nvcompStatus_t)));
 
             CHECK_NVCOMP(nvcompBatchedZstdDecompressAsync(
-                (const void* const*)d_inputs ,      // device_compressed_chunk_ptrs
-                d_input_sizes ,                     // device_compressed_chunk_bytes
-                d_output_sizes ,                    // device_uncompressed_buffer_bytes
-                d_output_sizes ,                    // device_uncompressed_chunk_bytes 
-                num_chunks ,                        // batch num
+                (const void* const*)d_inputs ,
+                d_input_sizes ,
+                d_output_sizes ,
+                d_output_sizes ,
+                num_chunks ,
                 d_temp , temp_bytes ,
                 (void* const*)d_outputs ,
                 decomp_opts ,
                 d_statuses ,
-                stream));                          // CUDA stream
+                stream));
 
             CHECK_CUDA(cudaStreamSynchronize(stream));
 
@@ -798,13 +1267,14 @@ MainData PCACompressor::decompressLossless(
 
             return output;
         };
-#endif // USE_CUDA
+#endif 
 
     size_t processMaskOrigSize = (metaData.nVec + 7) / 8;
     std::vector<uint8_t> processMaskVec(processMaskOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
+        std::cout << "[GAE Coeff Decompression] NVCOMP ZSTD is used\n";
         processMaskVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[0] ,
@@ -812,6 +1282,8 @@ MainData PCACompressor::decompressLossless(
 #endif
     }
     else {
+        std::cout << "[GAE Coeff Decompression] CPU ZSTD is used\n";
+        CHECK_ZSTD_BLOCK("process_mask", offset, compressedSizes[0]);
         size_t sz = ZSTD_decompress(
             processMaskVec.data() , processMaskVec.size() ,
             compressedData.data.data() + offset , compressedSizes[0]);
@@ -824,8 +1296,8 @@ MainData PCACompressor::decompressLossless(
     size_t prefixMaskOrigSize = (metaData.prefixLength + 7) / 8;
     std::vector<uint8_t> prefixMaskVec(prefixMaskOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         prefixMaskVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[1] ,
@@ -833,6 +1305,7 @@ MainData PCACompressor::decompressLossless(
 #endif
     }
     else {
+        CHECK_ZSTD_BLOCK("prefix_mask", offset, compressedSizes[1]);
         size_t sz = ZSTD_decompress(
             prefixMaskVec.data() , prefixMaskVec.size() ,
             compressedData.data.data() + offset , compressedSizes[1]);
@@ -845,8 +1318,8 @@ MainData PCACompressor::decompressLossless(
     int64_t numVecsProcessed = torch::sum(mainData.processMask).item<int64_t>();
     std::vector<uint8_t> maskLengthVec(numVecsProcessed);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         maskLengthVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[2] ,
@@ -854,6 +1327,7 @@ MainData PCACompressor::decompressLossless(
 #endif
     }
     else {
+        CHECK_ZSTD_BLOCK("mask_length", offset, compressedSizes[2]);
         size_t sz = ZSTD_decompress(
             maskLengthVec.data() , maskLengthVec.size() ,
             compressedData.data.data() + offset , compressedSizes[2]);
@@ -883,8 +1357,8 @@ MainData PCACompressor::decompressLossless(
     size_t coeffIntOrigSize = compressedData.coeffIntBytes;
     std::vector<uint8_t> coeffIntVec(coeffIntOrigSize);
 
-    if (use_gpu) {
-#ifdef USE_CUDA
+    if (use_nvcomp) {
+#if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
         coeffIntVec = gpu_decompress(
             compressedData.data.data() + offset ,
             compressedSizes[3] ,
@@ -892,6 +1366,12 @@ MainData PCACompressor::decompressLossless(
 #endif
     }
     else {
+        CHECK_ZSTD_BLOCK("coeff_int", offset, compressedSizes[3]);
+        auto p = compressedData.data.data() + offset;
+        auto fsz = ZSTD_getFrameContentSize(p, compressedSizes[3]);
+        std::cout << "[DBG] coeff_int frameSize=" << (unsigned long long)fsz
+                  << " expected=" << coeffIntOrigSize << "\n";
+
         size_t sz = ZSTD_decompress(
             coeffIntVec.data() , coeffIntVec.size() ,
             compressedData.data.data() + offset , compressedSizes[3]);
@@ -906,7 +1386,6 @@ MainData PCACompressor::decompressLossless(
 
     return mainData;
 }
-
 
 torch::Tensor PCACompressor::toCPUContiguous(const torch::Tensor& tensor) {
     return tensor.cpu().contiguous();
@@ -934,8 +1413,11 @@ torch::Tensor PCACompressor::deserializeTensor(const std::vector<uint8_t>& bytes
 void PCACompressor::cleanupGPUMemory() {
 #ifdef USE_CUDA
     if (device_.is_cuda()) {
-        c10::cuda::CUDACachingAllocator::emptyCache();
-    }
+#if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
+        c10::hip::HIPCachingAllocator::emptyCache();
 #else
+        c10::cuda::CUDACachingAllocator::emptyCache();
+#endif
+    }
 #endif
 }
