@@ -43,13 +43,9 @@ struct NvcompBatchCompressResult {
     size_t               rawBytes;
 };
 
-// The header says "chunk sizes must not exceed 16 MB" in CompressAsync.
 // We chunk all inputs down to this size before submitting as one big batch.
 static constexpr size_t NVCOMP_ZSTD_MAX_CHUNK = 16ULL * 1024 * 1024; // 16 MB
 
-// ─────────────────────────────────────────────
-// Batched GPU compress with chunking to respect 16 MB limit
-// ─────────────────────────────────────────────
 static std::vector<NvcompBatchCompressResult>
 nvcomp_batch_compress(
     const std::vector<const uint8_t*>& inputs,
@@ -58,7 +54,6 @@ nvcomp_batch_compress(
     const size_t N = inputs.size();
     std::vector<NvcompBatchCompressResult> results(N);
 
-    // ── 1. Compute chunking layout for all N buffers ──
     // Each logical buffer i gets split into ceil(sizes[i] / MAX_CHUNK) pieces.
     // We flatten all pieces across all buffers into one giant batch.
     struct ChunkInfo {
@@ -73,7 +68,7 @@ nvcomp_batch_compress(
         results[i].rawBytes = sizes[i];
         chunk_start_idx[i] = chunks.size();
 
-        if (sizes[i] == 0) continue; // empty buffer contributes zero chunks
+        if (sizes[i] == 0) continue; 
 
         size_t offset = 0;
         while (offset < sizes[i]) {
@@ -84,9 +79,9 @@ nvcomp_batch_compress(
     }
 
     const size_t totalChunks = chunks.size();
-    if (totalChunks == 0) return results; // all inputs were empty
+    if (totalChunks == 0) return results;
 
-    // ── 2. Query sizes using the actual max chunk size (capped at 16 MB) ──
+
     nvcompBatchedZstdCompressOpts_t comp_opts = nvcompBatchedZstdCompressDefaultOpts;
 
     size_t maxOutPerChunk = 0;
@@ -105,9 +100,6 @@ nvcomp_batch_compress(
               << " maxOutPerChunk=" << maxOutPerChunk
               << " tempBytes=" << totalTempBytes << "\n";
 
-    // ── 3. Allocate GPU memory ──
-    // Input pool: each chunk slot is NVCOMP_ZSTD_MAX_CHUNK (stride for pointer math)
-    // Output pool: each chunk slot is maxOutPerChunk
     size_t inputPoolSize  = totalChunks * NVCOMP_ZSTD_MAX_CHUNK;
     size_t outputPoolSize = totalChunks * maxOutPerChunk;
 
@@ -130,7 +122,6 @@ nvcomp_batch_compress(
     CHECK_CUDA(cudaMalloc(&d_output_sizes, totalChunks * sizeof(size_t)));
     CHECK_CUDA(cudaMalloc(&d_statuses,     totalChunks * sizeof(nvcompStatus_t)));
 
-    // ── 4. Build host arrays + upload all input data async ──
     std::vector<void*>  h_input_ptrs(totalChunks);
     std::vector<void*>  h_output_ptrs(totalChunks);
     std::vector<size_t> h_input_sizes(totalChunks);
@@ -152,12 +143,10 @@ nvcomp_batch_compress(
             cudaMemcpyHostToDevice, stream));
     }
 
-    // Upload pointer/size metadata
     CHECK_CUDA(cudaMemcpyAsync(d_input_ptrs,  h_input_ptrs.data(),  totalChunks * sizeof(void*),  cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemcpyAsync(d_output_ptrs, h_output_ptrs.data(), totalChunks * sizeof(void*),  cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemcpyAsync(d_input_sizes, h_input_sizes.data(), totalChunks * sizeof(size_t), cudaMemcpyHostToDevice, stream));
 
-    // ── 5. Launch — one call for ALL chunks across ALL buffers ──
     CHECK_NVCOMP(nvcompBatchedZstdCompressAsync(
         (const void* const*)d_input_ptrs,
         (const size_t*)d_input_sizes,
@@ -171,10 +160,9 @@ nvcomp_batch_compress(
         (nvcompStatus_t*)d_statuses,
         stream));
 
-    // ── 6. ONE sync ──
+    // see if this can be removed fro later
     CHECK_CUDA(cudaStreamSynchronize(stream));
 
-    // ── 7. Read back sizes + statuses ──
     std::vector<size_t>         h_output_sizes(totalChunks);
     std::vector<nvcompStatus_t> h_statuses(totalChunks);
 
@@ -187,13 +175,11 @@ nvcomp_batch_compress(
                 + " (buffer " + std::to_string(chunks[c].buf_idx) + ")");
     }
 
-    // ── 8. Reassemble: for each original buffer, concatenate its compressed chunks ──
     //      Format per buffer: [num_chunks:uint64][uncomp_size_0:uint64]...[comp_size_0:uint64]...[data...]
     //      This lets decompression reconstruct without knowing original sizes externally.
     for (size_t i = 0; i < N; i++) {
         if (sizes[i] == 0) continue;
 
-        // Gather chunk indices for this buffer
         size_t first = chunk_start_idx[i];
         size_t count = 0;
         for (size_t c = first; c < totalChunks && chunks[c].buf_idx == i; c++) count++;
@@ -201,7 +187,6 @@ nvcomp_batch_compress(
         std::vector<uint8_t>& out = results[i].compressed;
 
         if (count == 1) {
-            // Single chunk — no framing header needed, just raw compressed data
             out.resize(h_output_sizes[first]);
             CHECK_CUDA(cudaMemcpy(out.data(),
                 (uint8_t*)d_output_pool + first * maxOutPerChunk,
@@ -240,7 +225,6 @@ nvcomp_batch_compress(
         }
     }
 
-    // ── 9. Cleanup ──
     cudaFree(d_input_pool);
     cudaFree(d_output_pool);
     if (d_temp) cudaFree(d_temp);
@@ -254,9 +238,7 @@ nvcomp_batch_compress(
     return results;
 }
 
-// ─────────────────────────────────────────────
 // Batched GPU decompress — handles both single-chunk and multi-chunk framing
-// ─────────────────────────────────────────────
 static std::vector<std::vector<uint8_t>>
 nvcomp_batch_decompress(
     const std::vector<const uint8_t*>& comp_ptrs,
@@ -266,7 +248,6 @@ nvcomp_batch_decompress(
     const size_t N = comp_ptrs.size();
     std::vector<std::vector<uint8_t>> results(N);
 
-    // ── 1. Parse framing headers, flatten all chunks into one batch ──
     struct DecompChunkInfo {
         size_t buf_idx;
         const uint8_t* comp_ptr;   // points into host compressed data
@@ -282,7 +263,6 @@ nvcomp_batch_decompress(
 
         const uint8_t* p = comp_ptrs[i];
 
-        // Try to detect multi-chunk framing:
         // Read first 8 bytes as potential num_chunks
         uint64_t potential_nc = 0;
         memcpy(&potential_nc, p, 8);
@@ -291,7 +271,6 @@ nvcomp_batch_decompress(
         bool is_multi = (potential_nc > 1 && potential_nc < 1000 && headerSize < comp_sizes[i]);
 
         if (is_multi) {
-            // Verify: sum of uncompressed sizes should equal decomp_sizes[i]
             const uint8_t* hp = p + 8;
             std::vector<size_t> unc_sizes(potential_nc), cmp_sizes(potential_nc);
             size_t total_unc = 0;
@@ -312,7 +291,6 @@ nvcomp_batch_decompress(
                 }
                 continue;
             }
-            // else fall through to single-chunk
         }
 
         // Single chunk — entire compressed buffer is one chunk
@@ -322,7 +300,6 @@ nvcomp_batch_decompress(
     const size_t totalChunks = chunks.size();
     if (totalChunks == 0) return results;
 
-    // ── 2. Find max sizes for allocation ──
     size_t maxCompChunk   = 0;
     size_t maxDecompChunk = 0;
     size_t totalDecomp    = 0;
@@ -338,7 +315,6 @@ nvcomp_batch_decompress(
     CHECK_NVCOMP(nvcompBatchedZstdDecompressGetTempSizeAsync(
         totalChunks, maxDecompChunk, decomp_opts, &totalTempBytes, totalDecomp));
 
-    // ── 3. Allocate ──
     void* d_comp_pool   = nullptr;
     void* d_decomp_pool = nullptr;
     void* d_temp        = nullptr;
@@ -360,7 +336,6 @@ nvcomp_batch_decompress(
     CHECK_CUDA(cudaMalloc(&d_output_sizes, totalChunks * sizeof(size_t)));
     CHECK_CUDA(cudaMalloc(&d_statuses,     totalChunks * sizeof(nvcompStatus_t)));
 
-    // ── 4. Upload all compressed chunks async ──
     std::vector<void*>  h_input_ptrs(totalChunks), h_output_ptrs(totalChunks);
     std::vector<size_t> h_input_sizes(totalChunks), h_output_sizes(totalChunks);
 
@@ -385,7 +360,6 @@ nvcomp_batch_decompress(
     CHECK_CUDA(cudaMemcpyAsync(d_input_sizes,  h_input_sizes.data(),  totalChunks * sizeof(size_t), cudaMemcpyHostToDevice, stream));
     CHECK_CUDA(cudaMemcpyAsync(d_output_sizes, h_output_sizes.data(), totalChunks * sizeof(size_t), cudaMemcpyHostToDevice, stream));
 
-    // ── 5. Launch ──
     CHECK_NVCOMP(nvcompBatchedZstdDecompressAsync(
         (const void* const*)d_input_ptrs,
         (const size_t*)d_input_sizes,
@@ -398,10 +372,9 @@ nvcomp_batch_decompress(
         (nvcompStatus_t*)d_statuses,
         stream));
 
-    // ── 6. ONE sync ──
+    // see if this can be rmeoved
     CHECK_CUDA(cudaStreamSynchronize(stream));
 
-    // ── 7. Check statuses ──
     std::vector<nvcompStatus_t> h_statuses(totalChunks);
     CHECK_CUDA(cudaMemcpy(h_statuses.data(), d_statuses, totalChunks * sizeof(nvcompStatus_t), cudaMemcpyDeviceToHost));
 
@@ -411,7 +384,6 @@ nvcomp_batch_decompress(
                 + " (buffer " + std::to_string(chunks[c].buf_idx) + ")");
     }
 
-    // ── 8. Reassemble each original buffer from its chunks ──
     for (size_t i = 0; i < N; i++) {
         if (decomp_sizes[i] == 0) continue;
 
@@ -430,7 +402,6 @@ nvcomp_batch_decompress(
         }
     }
 
-    // ── 9. Cleanup ──
     cudaFree(d_comp_pool);
     cudaFree(d_decomp_pool);
     if (d_temp) cudaFree(d_temp);
@@ -1022,7 +993,7 @@ PCACompressor::compressLossless(const MetaData& metaData , const MainData& mainD
     size_t raw_mask_length_bytes  = 0;
     size_t raw_coeff_int_bytes    = 0;
     
-    bool use_nvcomp = true;
+    bool use_nvcomp = false;
 #if defined(USE_CUDA) && defined(ENABLE_NVCOMP)
 use_nvcomp = device_.is_cuda();
 #endif
@@ -1138,6 +1109,7 @@ std::cout << "USE_CUDA="
     {
         std::cout << "[GAE Coeff Compression] CPU ZSTD is used (zstdmt)\n";
 
+        // CHNAGE THIS make it work with 4 and N being the num of cpu allocate on linux
         // --- helper: single-buffer zstd multithread compression ---
         // workers=10 means zstd internally splits the input into jobs and compresses in parallel
         auto zstd_compress_mt = [&](const std::vector<uint8_t>& in,
