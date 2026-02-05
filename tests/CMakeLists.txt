@@ -1,4 +1,3 @@
-
 if(APPLE)
     set(FILESYSTEM_LIB "")
 elseif(UNIX AND NOT APPLE)
@@ -16,6 +15,7 @@ else()
 endif()
 
 set(NVCOMP_FOUND OFF)
+
 if(USE_CUDA)
     find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h nvcomp/nvcomp.h)
     find_library(NVCOMP_LIBRARY NAMES nvcomp)
@@ -28,22 +28,18 @@ if(USE_CUDA)
     endif()
 endif()
 
-
 add_executable(test_caesarCD test_caesarCD.cpp)
 target_link_libraries(test_caesarCD PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
 
-
 add_executable(test_padding test_padding.cpp)
 target_link_libraries(test_padding PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
-
-
 
 add_executable(test_runGaeCuda testRunGaeCuda.cpp)
 target_link_libraries(test_runGaeCuda PRIVATE caesar_lib "${TORCH_LIBRARIES}" ${FILESYSTEM_LIB})
 
 if(USE_CUDA)
     target_compile_definitions(test_runGaeCuda PRIVATE USE_CUDA)
-    
+
     if(NVCOMP_FOUND)
         target_compile_definitions(test_runGaeCuda PRIVATE ENABLE_NVCOMP)
         target_include_directories(test_runGaeCuda PRIVATE ${NVCOMP_INCLUDE_DIR})
@@ -63,18 +59,25 @@ else()
 endif()
 
 set(TEST_TARGETS
-    test_dataset
     test_caesarCD
     test_padding
-    test_datasetNRMSE
     test_runGaeCuda
 )
 
 if(MSVC)
-    file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
+    get_target_property(TORCH_LIBRARY torch LOCATION)
+    get_filename_component(TORCH_LIB_DIR "${TORCH_LIBRARY}" DIRECTORY)
+    
+    message(STATUS "Torch library directory: ${TORCH_LIB_DIR}")
+    
+    file(GLOB TORCH_DLLS "${TORCH_LIB_DIR}/*.dll")
+    
     foreach(test_exe ${TEST_TARGETS})
         add_custom_command(TARGET ${test_exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E echo "Copying Torch DLLs for ${test_exe}..."
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${TORCH_DLLS} $<TARGET_FILE_DIR:${test_exe}>)
+                ${TORCH_DLLS} $<TARGET_FILE_DIR:${test_exe}>
+            COMMENT "Copying Torch DLLs to $<TARGET_FILE_DIR:${test_exe}>"
+        )
     endforeach()
 endif()

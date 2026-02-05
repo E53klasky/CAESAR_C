@@ -276,7 +276,14 @@ jobs:
         run: |
           cd build/tests
           New-Item -ItemType Directory -Force -Path output
-          .\Debug\test_caesarCD.exe
+          if (Test-Path "Debug\test_caesarCD.exe") {
+            .\Debug\test_caesarCD.exe
+          } elseif (Test-Path "Release\test_caesarCD.exe") {
+            .\Release\test_caesarCD.exe
+          } else {
+            Write-Error "test_caesarCD.exe not found in Debug or Release"
+            exit 1
+          }
 
       - name: Run test_runGaeCuda (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -299,7 +306,14 @@ jobs:
         shell: pwsh
         run: |
           cd build/tests
-          .\Debug\test_runGaeCuda.exe
+          if (Test-Path "Debug\test_runGaeCuda.exe") {
+            .\Debug\test_runGaeCuda.exe
+          } elseif (Test-Path "Release\test_runGaeCuda.exe") {
+            .\Release\test_runGaeCuda.exe
+          } else {
+            Write-Error "test_runGaeCuda.exe not found in Debug or Release"
+            exit 1
+          }
 
       - name: Run test_padding (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -322,10 +336,16 @@ jobs:
         shell: pwsh
         run: |
           cd build/tests
-          .\Debug\test_padding.exe
+          if (Test-Path "Debug\test_padding.exe") {
+            .\Debug\test_padding.exe
+          } elseif (Test-Path "Release\test_padding.exe") {
+            .\Release\test_padding.exe
+          } else {
+            Write-Error "test_padding.exe not found in Debug or Release"
+            exit 1
+          }
 
       - name: Check test results
         shell: bash
         run: |
           echo "Test completed successfully on ${{ matrix.os }}!"
-
