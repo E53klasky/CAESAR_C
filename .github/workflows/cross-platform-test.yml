@@ -101,7 +101,13 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          choco install cmake zstandard -y
+          # Install vcpkg and zstd
+          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg.exe install zstd:x64-windows
+          
+          # Install cmake via choco
+          choco install cmake -y
           
           .\venv\Scripts\Activate.ps1
 
@@ -222,6 +228,7 @@ jobs:
           
           cmake .. `
             -DCMAKE_PREFIX_PATH="$TORCH_PATH" `
+            -DCMAKE_TOOLCHAIN_FILE="C:\vcpkg\scripts\buildsystems\vcpkg.cmake" `
             -DBUILD_TESTS=ON `
             -DCMAKE_BUILD_TYPE=Debug
 
