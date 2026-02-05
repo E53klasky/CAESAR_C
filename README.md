@@ -13,7 +13,6 @@ The baseline model, CAESAR-V, is built on a variational autoencoder (VAE) with s
 ## Notes
 
 - GPU support currently tested only with NVIDIA GPUs
-- **MPI is not used** in this implementation
 - **Zstandard (zstd) 1.5+ is required** for compression support
 - Model compression requires a correctly configured Python environment
 - This repository officially supports **Linux and macOS**
