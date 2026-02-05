@@ -50,7 +50,7 @@ jobs:
           python -m venv venv
           .\venv\Scripts\Activate.ps1
           python -V
-          pip install --upgrade pip wheel setuptools
+          python -m pip install --upgrade pip wheel setuptools
 
       - name: Install Linux deps (inside venv)
         if: matrix.os == 'ubuntu-latest'
@@ -301,3 +301,4 @@ jobs:
         shell: bash
         run: |
           echo "Test completed successfully on ${{ matrix.os }}!"
+
