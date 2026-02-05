@@ -105,6 +105,7 @@ jobs:
           
           .\venv\Scripts\Activate.ps1
 
+          # Filter requirements.txt
           Get-Content requirements.txt | Where-Object { 
             $_ -notmatch "^torch" -and 
             $_ -notmatch "^torchvision" -and 
@@ -114,15 +115,19 @@ jobs:
             $_ -notmatch "^$" 
           } | Set-Content temp_requirements.txt
 
-          pip install -r temp_requirements.txt
+          # Install filtered requirements
+          python -m pip install -r temp_requirements.txt
 
-          pip install torch==2.9.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          # Install PyTorch
+          python -m pip install torch==2.9.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
           # Try to install compressai - may fail on Windows, continue anyway
-          pip install compressai==1.2.6 imageio==2.37.0 ; if ($LASTEXITCODE -ne 0) { 
+          python -m pip install compressai==1.2.6 imageio==2.37.0
+          if ($LASTEXITCODE -ne 0) { 
             Write-Host "Warning: compressai installation failed, continuing without it" 
             $LASTEXITCODE = 0
           }
+          
           Remove-Item temp_requirements.txt
 
       - name: Download pretrained models (Linux/macOS)
@@ -156,9 +161,24 @@ jobs:
         shell: pwsh
         run: |
           .\venv\Scripts\Activate.ps1
-          python CAESAR_compressor.py cpu ; if ($LASTEXITCODE -ne 0) { Write-Host "Warning: CAESAR_compressor.py failed, continuing" }
-          python CAESAR_hyper_decompressor.py cpu ; if ($LASTEXITCODE -ne 0) { Write-Host "Warning: CAESAR_hyper_decompressor.py failed, continuing" }
-          python CAESAR_decompressor.py cpu ; if ($LASTEXITCODE -ne 0) { Write-Host "Warning: CAESAR_decompressor.py failed, continuing" }
+          
+          python CAESAR_compressor.py cpu
+          if ($LASTEXITCODE -ne 0) { 
+            Write-Host "Warning: CAESAR_compressor.py failed, continuing" 
+            $LASTEXITCODE = 0
+          }
+          
+          python CAESAR_hyper_decompressor.py cpu
+          if ($LASTEXITCODE -ne 0) { 
+            Write-Host "Warning: CAESAR_hyper_decompressor.py failed, continuing" 
+            $LASTEXITCODE = 0
+          }
+          
+          python CAESAR_decompressor.py cpu
+          if ($LASTEXITCODE -ne 0) { 
+            Write-Host "Warning: CAESAR_decompressor.py failed, continuing" 
+            $LASTEXITCODE = 0
+          }
 
       - name: Configure CMake (Linux)
         if: matrix.os == 'ubuntu-latest'
