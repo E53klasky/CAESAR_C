@@ -18,90 +18,266 @@
 #include "models/caesar_compress.h"
 #include "models/caesar_decompress.h"
 
-void print_usage(const char* program_name) {
-  std::cout << "CAESAR - Compression Tool for Scientific Data\n\n";
-  std::cout << "Usage:\n";
-  std::cout << "  " << program_name << " compress <input.bin> [options]\n";
-  std::cout << "  " << program_name << " decompress <input.cae> [options]\n\n";
-  std::cout << "Commands:\n";
-  std::cout << "  compress       Compress a raw binary file\n";
-  std::cout << "  decompress     Decompress a .cae file\n\n";
-  std::cout << "Options:\n";
-  std::cout << "  -o, --output <file>          Output file path (default: "
-               "auto-generated)\n";
-  std::cout << "  -s, --shape <T,C,H,W> or <T,H,W>  Data shape (required for "
-               "compress)\n";
-  std::cout << "  -e, --error-bound <value>    Relative error bound (default: "
-               "0.001)\n";
-  std::cout << "  -b, --batch-size <size>      Batch size (default: 128)\n";
-  std::cout << "  -f, --n-frame <frames>       Number of frames (default: "
-               "8)\n";
-  std::cout << "  -m, --model <type>           Model type: V or D (default: "
-               "V) [D not yet implemented]\n";
-  std::cout << "  --compress-device <device>   Device for compression: cpu or "
-               "cuda (default: auto)\n";
-  std::cout << "  --decompress-device <device> Device for decompression: cpu "
-               "or cuda (default: auto)\n";
-  std::cout << "  -t, --timing                 Show timing information\n";
-  std::cout << "  --metadata                   Show detailed metadata "
-               "statistics\n";
-  std::cout << "  -v, --verbose                Verbose output\n";
-  std::cout << "  -q, --quiet                  Minimal output\n";
-  std::cout << "  --verify                     Verify decompression by "
-               "computing metrics\n";
-  std::cout << "  --metrics-csv <file>         Save metrics to CSV file\n";
-  std::cout << "  --preset <level>             Compression preset: fast "
-               "(0.01), balanced (0.001), best (0.0001)\n";
-  std::cout << "  --force-padding              Force spatial padding\n";
-  std::cout << "  -h, --help                   Show this help message\n\n";
-  std::cout << "Examples:\n";
-  std::cout << "  # Compress with shape 20,256,256\n";
-  std::cout << "  " << program_name
-            << " compress data.bin -s 20,256,256 -o compressed.cae\n\n";
-  std::cout << "  # Compress with custom error bound and timing\n";
-  std::cout << "  " << program_name
-            << " compress data.bin -s 1,1,20,256,256 -e 0.0001 -t "
-               "--metadata\n\n";
-  std::cout << "  # Decompress with verification\n";
-  std::cout << "  " << program_name
-            << " decompress compressed.cae -o output.bin --verify\n\n";
-  std::cout << "  # Use CUDA for compression, CPU for decompression\n";
-  std::cout << "  " << program_name
-            << " compress data.bin -s 20,256,256 --compress-device cuda\n\n";
+void save_complete_metadata(const std::string& filename,
+                            const PaddingInfo& padding_info,
+                            const CompressionResult& comp) {
+  std::ofstream file(filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open metadata file for writing: " +
+                             filename);
+  }
+
+  // Save PaddingInfo
+  size_t size = padding_info.original_shape.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(padding_info.original_shape.data()),
+             size * sizeof(int64_t));
+
+  file.write(reinterpret_cast<const char*>(&padding_info.original_length),
+             sizeof(padding_info.original_length));
+
+  size = padding_info.padded_shape.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(padding_info.padded_shape.data()),
+             size * sizeof(int64_t));
+
+  file.write(reinterpret_cast<const char*>(&padding_info.H),
+             sizeof(padding_info.H));
+  file.write(reinterpret_cast<const char*>(&padding_info.W),
+             sizeof(padding_info.W));
+  file.write(reinterpret_cast<const char*>(&padding_info.was_padded),
+             sizeof(padding_info.was_padded));
+
+  // Save num_samples and num_batches
+  file.write(reinterpret_cast<const char*>(&comp.num_samples),
+             sizeof(comp.num_samples));
+  file.write(reinterpret_cast<const char*>(&comp.num_batches),
+             sizeof(comp.num_batches));
+
+  // Save CompressionMetaData
+  const auto& meta = comp.compressionMetaData;
+
+  size = meta.offsets.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(meta.offsets.data()),
+             size * sizeof(float));
+
+  size = meta.scales.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(meta.scales.data()),
+             size * sizeof(float));
+
+  size = meta.indexes.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  for (const auto& idx_vec : meta.indexes) {
+    size_t inner_size = idx_vec.size();
+    file.write(reinterpret_cast<const char*>(&inner_size), sizeof(inner_size));
+    file.write(reinterpret_cast<const char*>(idx_vec.data()),
+               inner_size * sizeof(int32_t));
+  }
+
+  auto nH = std::get<0>(meta.block_info);
+  auto nW = std::get<1>(meta.block_info);
+  file.write(reinterpret_cast<const char*>(&nH), sizeof(nH));
+  file.write(reinterpret_cast<const char*>(&nW), sizeof(nW));
+  size = std::get<2>(meta.block_info).size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(std::get<2>(meta.block_info).data()),
+             size * sizeof(int32_t));
+
+  size = meta.data_input_shape.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(meta.data_input_shape.data()),
+             size * sizeof(int32_t));
+
+  size = meta.filtered_blocks.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  for (const auto& fb : meta.filtered_blocks) {
+    file.write(reinterpret_cast<const char*>(&fb.first), sizeof(fb.first));
+    file.write(reinterpret_cast<const char*>(&fb.second), sizeof(fb.second));
+  }
+
+  file.write(reinterpret_cast<const char*>(&meta.global_scale),
+             sizeof(meta.global_scale));
+  file.write(reinterpret_cast<const char*>(&meta.global_offset),
+             sizeof(meta.global_offset));
+  file.write(reinterpret_cast<const char*>(&meta.pad_T), sizeof(meta.pad_T));
+
+  // Save GAEMetaData
+  const auto& gae_meta = comp.gaeMetaData;
+
+  file.write(reinterpret_cast<const char*>(&gae_meta.GAE_correction_occur),
+             sizeof(gae_meta.GAE_correction_occur));
+
+  size = gae_meta.padding_recon_info.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(gae_meta.padding_recon_info.data()),
+             size * sizeof(int32_t));
+
+  size = gae_meta.pcaBasis.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  for (const auto& basis_vec : gae_meta.pcaBasis) {
+    size_t inner_size = basis_vec.size();
+    file.write(reinterpret_cast<const char*>(&inner_size), sizeof(inner_size));
+    file.write(reinterpret_cast<const char*>(basis_vec.data()),
+               inner_size * sizeof(float));
+  }
+
+  size = gae_meta.uniqueVals.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(gae_meta.uniqueVals.data()),
+             size * sizeof(float));
+
+  file.write(reinterpret_cast<const char*>(&gae_meta.quanBin),
+             sizeof(gae_meta.quanBin));
+  file.write(reinterpret_cast<const char*>(&gae_meta.nVec),
+             sizeof(gae_meta.nVec));
+  file.write(reinterpret_cast<const char*>(&gae_meta.prefixLength),
+             sizeof(gae_meta.prefixLength));
+  file.write(reinterpret_cast<const char*>(&gae_meta.dataBytes),
+             sizeof(gae_meta.dataBytes));
+  file.write(reinterpret_cast<const char*>(&gae_meta.coeffIntBytes),
+             sizeof(gae_meta.coeffIntBytes));
+
+  // Save gae_comp_data
+  size = comp.gae_comp_data.size();
+  file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+  file.write(reinterpret_cast<const char*>(comp.gae_comp_data.data()), size);
+
+  file.close();
 }
 
-std::vector<int64_t> parse_shape(const std::string& shape_str) {
-  std::vector<int64_t> shape;
-  std::stringstream ss(shape_str);
-  std::string token;
-  while (std::getline(ss, token, ',')) {
-    shape.push_back(std::stoll(token));
+CompressionResult load_complete_metadata(const std::string& filename,
+                                         PaddingInfo& padding_info) {
+  std::ifstream file(filename, std::ios::binary);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open metadata file for reading: " +
+                             filename);
   }
-  return shape;
-}
 
-torch::Device parse_device(const std::string& device_str) {
-  std::string lower = device_str;
-  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-  if (lower == "cpu") {
-    return torch::Device(torch::kCPU);
-  } else if (lower == "cuda" || lower == "gpu") {
-    if (torch::cuda::is_available()) {
-      return torch::Device(torch::kCUDA);
-    } else {
-      std::cerr << "Warning: CUDA requested but not available, using CPU\n";
-      return torch::Device(torch::kCPU);
-    }
-  } else {
-    throw std::runtime_error("Unknown device: " + device_str);
-  }
-}
+  CompressionResult comp;
 
-torch::Device auto_select_device() {
-  if (torch::cuda::is_available()) {
-    return torch::Device(torch::kCUDA);
+  // Load PaddingInfo
+  size_t size;
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  padding_info.original_shape.resize(size);
+  file.read(reinterpret_cast<char*>(padding_info.original_shape.data()),
+            size * sizeof(int64_t));
+
+  file.read(reinterpret_cast<char*>(&padding_info.original_length),
+            sizeof(padding_info.original_length));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  padding_info.padded_shape.resize(size);
+  file.read(reinterpret_cast<char*>(padding_info.padded_shape.data()),
+            size * sizeof(int64_t));
+
+  file.read(reinterpret_cast<char*>(&padding_info.H), sizeof(padding_info.H));
+  file.read(reinterpret_cast<char*>(&padding_info.W), sizeof(padding_info.W));
+  file.read(reinterpret_cast<char*>(&padding_info.was_padded),
+            sizeof(padding_info.was_padded));
+
+  // Load num_samples and num_batches
+  file.read(reinterpret_cast<char*>(&comp.num_samples),
+            sizeof(comp.num_samples));
+  file.read(reinterpret_cast<char*>(&comp.num_batches),
+            sizeof(comp.num_batches));
+
+  // Load CompressionMetaData
+  CompressionMetaData meta;
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  meta.offsets.resize(size);
+  file.read(reinterpret_cast<char*>(meta.offsets.data()), size * sizeof(float));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  meta.scales.resize(size);
+  file.read(reinterpret_cast<char*>(meta.scales.data()), size * sizeof(float));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  meta.indexes.resize(size);
+  for (auto& idx_vec : meta.indexes) {
+    size_t inner_size;
+    file.read(reinterpret_cast<char*>(&inner_size), sizeof(inner_size));
+    idx_vec.resize(inner_size);
+    file.read(reinterpret_cast<char*>(idx_vec.data()),
+              inner_size * sizeof(int32_t));
   }
-  return torch::Device(torch::kCPU);
+
+  int32_t nH, nW;
+  file.read(reinterpret_cast<char*>(&nH), sizeof(nH));
+  file.read(reinterpret_cast<char*>(&nW), sizeof(nW));
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  std::vector<int32_t> padding(size);
+  file.read(reinterpret_cast<char*>(padding.data()), size * sizeof(int32_t));
+  meta.block_info = std::make_tuple(nH, nW, padding);
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  meta.data_input_shape.resize(size);
+  file.read(reinterpret_cast<char*>(meta.data_input_shape.data()),
+            size * sizeof(int32_t));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  meta.filtered_blocks.resize(size);
+  for (auto& fb : meta.filtered_blocks) {
+    file.read(reinterpret_cast<char*>(&fb.first), sizeof(fb.first));
+    file.read(reinterpret_cast<char*>(&fb.second), sizeof(fb.second));
+  }
+
+  file.read(reinterpret_cast<char*>(&meta.global_scale),
+            sizeof(meta.global_scale));
+  file.read(reinterpret_cast<char*>(&meta.global_offset),
+            sizeof(meta.global_offset));
+  file.read(reinterpret_cast<char*>(&meta.pad_T), sizeof(meta.pad_T));
+
+  comp.compressionMetaData = meta;
+
+  // Load GAEMetaData
+  GAEMetaData gae_meta;
+
+  file.read(reinterpret_cast<char*>(&gae_meta.GAE_correction_occur),
+            sizeof(gae_meta.GAE_correction_occur));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  gae_meta.padding_recon_info.resize(size);
+  file.read(reinterpret_cast<char*>(gae_meta.padding_recon_info.data()),
+            size * sizeof(int32_t));
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  gae_meta.pcaBasis.resize(size);
+  for (auto& basis_vec : gae_meta.pcaBasis) {
+    size_t inner_size;
+    file.read(reinterpret_cast<char*>(&inner_size), sizeof(inner_size));
+    basis_vec.resize(inner_size);
+    file.read(reinterpret_cast<char*>(basis_vec.data()),
+              inner_size * sizeof(float));
+  }
+
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  gae_meta.uniqueVals.resize(size);
+  file.read(reinterpret_cast<char*>(gae_meta.uniqueVals.data()),
+            size * sizeof(float));
+
+  file.read(reinterpret_cast<char*>(&gae_meta.quanBin),
+            sizeof(gae_meta.quanBin));
+  file.read(reinterpret_cast<char*>(&gae_meta.nVec), sizeof(gae_meta.nVec));
+  file.read(reinterpret_cast<char*>(&gae_meta.prefixLength),
+            sizeof(gae_meta.prefixLength));
+  file.read(reinterpret_cast<char*>(&gae_meta.dataBytes),
+            sizeof(gae_meta.dataBytes));
+  file.read(reinterpret_cast<char*>(&gae_meta.coeffIntBytes),
+            sizeof(gae_meta.coeffIntBytes));
+
+  comp.gaeMetaData = gae_meta;
+
+  // Load gae_comp_data
+  file.read(reinterpret_cast<char*>(&size), sizeof(size));
+  comp.gae_comp_data.resize(size);
+  file.read(reinterpret_cast<char*>(comp.gae_comp_data.data()), size);
+
+  file.close();
+
+  return comp;
 }
 
 torch::Tensor load_raw_binary(const std::string& bin_path,
@@ -191,113 +367,65 @@ std::vector<std::string> load_encoded_streams(const std::string& filename) {
   return out;
 }
 
-template <typename T>
-size_t get_vector_data_size(const std::vector<T>& vec) {
-  if (vec.empty()) return 0;
-  return vec.size() * sizeof(T);
+void print_usage(const char* program_name) {
+  std::cout << "CAESAR Compression Tool\n\n";
+  std::cout << "Usage:\n";
+  std::cout << "  " << program_name << " compress <input> [options]\n";
+  std::cout << "  " << program_name << " decompress <input> [options]\n\n";
+  std::cout << "Common Options:\n";
+  std::cout << "  -o, --output <file>      Output file path\n";
+  std::cout << "  -s, --shape <shape>      Data shape (e.g., 1,24,256,256)\n";
+  std::cout << "  -b, --batch-size <n>     Batch size (default: 128)\n";
+  std::cout << "  -f, --n-frame <n>        Number of frames (default: 8)\n";
+  std::cout << "  -t, --timing             Show timing information\n";
+  std::cout << "  -v, --verbose            Verbose output\n";
+  std::cout << "  -q, --quiet              Suppress output\n";
+  std::cout << "  -h, --help               Show this help message\n\n";
+  std::cout << "Compression Options:\n";
+  std::cout << "  -e, --error-bound <val>  Error bound (default: 0.001)\n";
+  std::cout << "  -m, --model <V|D>        Model type (default: V)\n";
+  std::cout << "  --compress-device <dev>  Device (cpu/cuda)\n";
+  std::cout << "  --metadata               Show detailed metadata\n";
+  std::cout << "  --force-padding          Force padding\n";
+  std::cout << "  --metrics-csv <file>     Save metrics to CSV\n\n";
+  std::cout << "Decompression Options:\n";
+  std::cout << "  --decompress-device <dev> Device (cpu/cuda)\n";
+  std::cout << "  --verify                  Verify reconstruction\n";
+  std::cout << "  --original <file>         Original file for verification\n";
 }
 
-template <typename T>
-size_t get_2d_vector_data_size(const std::vector<std::vector<T>>& vec_2d) {
-  size_t total_bytes = 0;
-  for (const auto& inner_vec : vec_2d) {
-    total_bytes += inner_vec.size() * sizeof(T);
+std::vector<int64_t> parse_shape(const std::string& shape_str) {
+  std::vector<int64_t> shape;
+  std::stringstream ss(shape_str);
+  std::string item;
+  while (std::getline(ss, item, ',')) {
+    shape.push_back(std::stoll(item));
   }
-  return total_bytes;
+  return shape;
 }
 
-size_t calculate_metadata_size(const CompressionResult& result) {
-  size_t total_bytes = 0;
-  total_bytes += get_vector_data_size(result.gae_comp_data);
-  total_bytes += sizeof(result.num_samples);
-  total_bytes += sizeof(result.num_batches);
-
-  const auto& meta = result.compressionMetaData;
-  total_bytes += get_vector_data_size(meta.offsets);
-  total_bytes += get_vector_data_size(meta.scales);
-  total_bytes += get_2d_vector_data_size(meta.indexes);
-  total_bytes += sizeof(std::get<0>(meta.block_info));
-  total_bytes += sizeof(std::get<1>(meta.block_info));
-  total_bytes += get_vector_data_size(std::get<2>(meta.block_info));
-  total_bytes += get_vector_data_size(meta.data_input_shape);
-  total_bytes += get_vector_data_size(meta.filtered_blocks);
-  total_bytes += sizeof(meta.global_scale);
-  total_bytes += sizeof(meta.global_offset);
-  total_bytes += sizeof(meta.pad_T);
-
-  const auto& gae_meta = result.gaeMetaData;
-  total_bytes += sizeof(gae_meta.GAE_correction_occur);
-  total_bytes += get_vector_data_size(gae_meta.padding_recon_info);
-  total_bytes += get_2d_vector_data_size(gae_meta.pcaBasis);
-  total_bytes += get_vector_data_size(gae_meta.uniqueVals);
-  total_bytes += sizeof(gae_meta.quanBin);
-  total_bytes += sizeof(gae_meta.nVec);
-  total_bytes += sizeof(gae_meta.prefixLength);
-  total_bytes += sizeof(gae_meta.dataBytes);
-  total_bytes += sizeof(gae_meta.coeffIntBytes);
-
-  return total_bytes;
+torch::Device auto_select_device() {
+  if (torch::cuda::is_available()) {
+    return torch::Device(torch::kCUDA, 0);
+  }
+  return torch::Device(torch::kCPU);
 }
 
-void print_metadata_stats(const CompressionResult& result) {
-  std::cout << "\n=== DETAILED METADATA BREAKDOWN ===\n";
-
-  const auto& meta = result.compressionMetaData;
-  const auto& gae_meta = result.gaeMetaData;
-
-  std::cout << "Compression Metadata:\n";
-  std::cout << "  - Offsets vector size: " << meta.offsets.size() << " ("
-            << get_vector_data_size(meta.offsets) << " bytes)\n";
-  std::cout << "  - Scales vector size: " << meta.scales.size() << " ("
-            << get_vector_data_size(meta.scales) << " bytes)\n";
-  std::cout << "  - Indexes size: " << meta.indexes.size() << " ("
-            << get_2d_vector_data_size(meta.indexes) << " bytes)\n";
-  std::cout << "  - Block info (nH, nW): (" << std::get<0>(meta.block_info)
-            << ", " << std::get<1>(meta.block_info) << ")\n";
-  std::cout << "  - Padding info size: " << std::get<2>(meta.block_info).size()
-            << " (" << get_vector_data_size(std::get<2>(meta.block_info))
-            << " bytes)\n";
-  std::cout << "  - Input shape: [";
-  for (size_t i = 0; i < meta.data_input_shape.size(); ++i) {
-    std::cout << meta.data_input_shape[i];
-    if (i < meta.data_input_shape.size() - 1) std::cout << ", ";
+torch::Device parse_device(const std::string& device_str) {
+  if (device_str == "cpu") {
+    return torch::Device(torch::kCPU);
+  } else if (device_str.substr(0, 4) == "cuda") {
+    if (!torch::cuda::is_available()) {
+      std::cerr << "Warning: CUDA not available, using CPU\n";
+      return torch::Device(torch::kCPU);
+    }
+    if (device_str.size() > 5 && device_str[4] == ':') {
+      int device_id = std::stoi(device_str.substr(5));
+      return torch::Device(torch::kCUDA, device_id);
+    }
+    return torch::Device(torch::kCUDA, 0);
   }
-  std::cout << "]\n";
-  std::cout << "  - Filtered blocks: " << meta.filtered_blocks.size() << " ("
-            << get_vector_data_size(meta.filtered_blocks) << " bytes)\n";
-  std::cout << "  - Global scale: " << meta.global_scale << "\n";
-  std::cout << "  - Global offset: " << meta.global_offset << "\n";
-  std::cout << "  - Pad T: " << meta.pad_T << "\n";
-
-  std::cout << "\nGAE Metadata:\n";
-  std::cout << "  - GAE correction occurred: "
-            << (gae_meta.GAE_correction_occur ? "Yes" : "No") << "\n";
-  std::cout << "  - Padding recon info size: "
-            << gae_meta.padding_recon_info.size() << " ("
-            << get_vector_data_size(gae_meta.padding_recon_info) << " bytes)\n";
-  std::cout << "  - PCA Basis dimensions: " << gae_meta.pcaBasis.size();
-  if (!gae_meta.pcaBasis.empty()) {
-    std::cout << " x " << gae_meta.pcaBasis[0].size();
-  }
-  std::cout << " (" << get_2d_vector_data_size(gae_meta.pcaBasis)
-            << " bytes)\n";
-  std::cout << "  - Unique values: " << gae_meta.uniqueVals.size() << " ("
-            << get_vector_data_size(gae_meta.uniqueVals) << " bytes)\n";
-  std::cout << "  - Quantization bin: " << gae_meta.quanBin << "\n";
-  std::cout << "  - nVec: " << gae_meta.nVec << "\n";
-  std::cout << "  - Prefix length: " << gae_meta.prefixLength << "\n";
-  std::cout << "  - Data bytes: " << gae_meta.dataBytes << "\n";
-  std::cout << "  - Coeff int bytes: " << gae_meta.coeffIntBytes << "\n";
-
-  std::cout << "\nOther Compression Data:\n";
-  std::cout << "  - GAE compressed data: " << result.gae_comp_data.size()
-            << " bytes\n";
-  std::cout << "  - Number of samples: " << result.num_samples << "\n";
-  std::cout << "  - Number of batches: " << result.num_batches << "\n";
-  std::cout << "  - Encoded latents streams: " << result.encoded_latents.size()
-            << "\n";
-  std::cout << "  - Encoded hyper latents streams: "
-            << result.encoded_hyper_latents.size() << "\n";
+  throw std::runtime_error("Invalid device string: " + device_str);
 }
 
 double calculate_psnr(const torch::Tensor& original,
@@ -366,7 +494,6 @@ void save_metrics_to_csv(
        << nrmse << "," << std::setprecision(4) << psnr << "\n";
 
   file.close();
-  std::cout << "Metrics saved to " << filename << "\n";
 }
 
 int compress_file(const std::string& input_file, const std::string& output_file,
@@ -392,8 +519,6 @@ int compress_file(const std::string& input_file, const std::string& output_file,
   if (verbose) {
     std::cout << "After squeeze, shape: " << raw.sizes() << "\n";
   }
-
-  torch::Tensor raw_copy = raw.clone();
 
   torch::Tensor raw_5d;
   PaddingInfo padding_info;
@@ -434,17 +559,14 @@ int compress_file(const std::string& input_file, const std::string& output_file,
   std::chrono::duration<double> compression_time = end_time_c - start_time_c;
 
   if (show_timing || verbose) {
-    std::cout << "\n⏱️  Compression time: " << compression_time.count()
-              << " s\n";
+    std::cout << "\n  Compression time: " << compression_time.count() << " s\n";
   }
 
-  std::string base_output = output_file;
-  if (base_output.empty()) {
-    base_output = input_file + ".cae";
-  }
-
+  std::string base_output =
+      output_file.empty() ? input_file + ".cae" : output_file;
   std::string latents_file = base_output + ".latents";
   std::string hyper_file = base_output + ".hyper";
+  std::string metadata_file = base_output + ".meta";
 
   if (!save_encoded_streams(comp.encoded_latents, latents_file)) {
     std::cerr << "Failed to save encoded_latents\n";
@@ -455,51 +577,11 @@ int compress_file(const std::string& input_file, const std::string& output_file,
     return 1;
   }
 
-  uint64_t compressed_bytes = 0;
-  for (const auto& s : comp.encoded_latents) compressed_bytes += s.size();
-  for (const auto& s : comp.encoded_hyper_latents) compressed_bytes += s.size();
-
-  uint64_t num_elements = 1;
-  for (auto d : shape) num_elements *= static_cast<uint64_t>(d);
-  uint64_t uncompressed_bytes = num_elements * sizeof(float);
-
-  size_t metadata_bytes = calculate_metadata_size(comp);
-
-  double cr_without_meta = (compressed_bytes > 0)
-                               ? static_cast<double>(uncompressed_bytes) /
-                                     static_cast<double>(compressed_bytes)
-                               : 0.0;
-
-  double cr_with_meta = (compressed_bytes + metadata_bytes > 0)
-                            ? static_cast<double>(uncompressed_bytes) /
-                                  (static_cast<double>(compressed_bytes) +
-                                   static_cast<double>(metadata_bytes))
-                            : 0.0;
-
-  if (!quiet) {
-    std::cout << "\n Compression Statistics:\n";
-    std::cout << "  Uncompressed size: " << uncompressed_bytes << " bytes ("
-              << (uncompressed_bytes / 1024.0 / 1024.0) << " MB)\n";
-    std::cout << "  Compressed size:   " << compressed_bytes << " bytes ("
-              << (compressed_bytes / 1024.0 / 1024.0) << " MB)\n";
-    std::cout << "  Metadata size:     " << metadata_bytes << " bytes ("
-              << (metadata_bytes / 1024.0 / 1024.0) << " MB)\n";
-    std::cout << "  CR (without metadata): " << std::fixed
-              << std::setprecision(4) << cr_without_meta << ":1\n";
-    std::cout << "  CR (with metadata):    " << cr_with_meta << ":1\n";
-  }
-
-  if (show_metadata) {
-    print_metadata_stats(comp);
-  }
-
-  if (!metrics_csv.empty()) {
-    save_metrics_to_csv(
-        metrics_csv, input_file, shape, compression_time.count(), 0.0,
-        uncompressed_bytes, compressed_bytes, metadata_bytes, cr_with_meta,
-        cr_without_meta, 0.0, 0.0,  // NRMSE and PSNR not available yet
-        error_bound, batch_size, n_frame, model_type,
-        compress_device.is_cuda() ? "cuda" : "cpu", "N/A");
+  try {
+    save_complete_metadata(metadata_file, padding_info, comp);
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to save metadata: " << e.what() << "\n";
+    return 1;
   }
 
   if (!quiet) {
@@ -507,6 +589,7 @@ int compress_file(const std::string& input_file, const std::string& output_file,
     std::cout << "Output files:\n";
     std::cout << "  - " << latents_file << "\n";
     std::cout << "  - " << hyper_file << "\n";
+    std::cout << "  - " << metadata_file << "\n";
   }
 
   return 0;
@@ -528,6 +611,7 @@ int decompress_file(const std::string& input_base,
 
   std::string latents_file = input_base + ".latents";
   std::string hyper_file = input_base + ".hyper";
+  std::string metadata_file = input_base + ".meta";
 
   std::vector<std::string> loaded_latents = load_encoded_streams(latents_file);
   std::vector<std::string> loaded_hyper = load_encoded_streams(hyper_file);
@@ -542,11 +626,27 @@ int decompress_file(const std::string& input_base,
               << loaded_hyper.size() << " hyper streams\n";
   }
 
+  PaddingInfo padding_info;
   CompressionResult comp;
+
+  try {
+    comp = load_complete_metadata(metadata_file, padding_info);
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to load metadata: " << e.what() << "\n";
+    return 1;
+  }
+
   comp.encoded_latents = loaded_latents;
   comp.encoded_hyper_latents = loaded_hyper;
 
-  // Decompress
+  if (verbose) {
+    std::cout << "Loaded metadata:\n";
+    std::cout << "  Number of samples: " << comp.num_samples << "\n";
+    std::cout << "  Number of batches: " << comp.num_batches << "\n";
+  }
+
+  std::cout << "Metadata loaded successfully\n";
+
   auto start_time_d = std::chrono::high_resolution_clock::now();
   Decompressor decompressor(decompress_device);
   torch::Tensor recon = decompressor.decompress(batch_size, n_frame, comp);
@@ -568,12 +668,14 @@ int decompress_file(const std::string& input_base,
     std::cout << "Reconstructed tensor shape: " << recon.sizes() << "\n";
   }
 
-  PaddingInfo padding_info;
   torch::Tensor restored = restore_from_5d(recon, padding_info);
+
+  if (verbose) {
+    std::cout << "Restored tensor shape: " << restored.sizes() << "\n";
+  }
 
   save_tensor_to_bin(restored, output_file, verbose);
 
-  // Verification
   if (verify && !original_file.empty()) {
     if (!quiet) std::cout << "\n Verifying reconstruction...\n";
 
@@ -645,8 +747,6 @@ int main(int argc, char* argv[]) {
     }
 
     std::string input_file = argv[2];
-
-    // Default parameters
     std::string output_file;
     std::vector<int64_t> shape;
     float error_bound = 0.001f;
@@ -664,7 +764,6 @@ int main(int argc, char* argv[]) {
     std::string metrics_csv;
     std::string original_file;
 
-    // Parse arguments
     for (int i = 3; i < argc; ++i) {
       std::string arg = argv[i];
 
@@ -682,15 +781,6 @@ int main(int argc, char* argv[]) {
         model_type = argv[++i];
         std::transform(model_type.begin(), model_type.end(), model_type.begin(),
                        ::toupper);
-        if (model_type != "V" && model_type != "D") {
-          std::cerr << "Error: Model must be 'V' or 'D'\n";
-          return 1;
-        }
-        if (model_type == "D") {
-          std::cerr
-              << "Warning: CAESAR-D is not yet implemented, using CAESAR-V\n";
-          model_type = "V";
-        }
       } else if (arg == "--compress-device" && i + 1 < argc) {
         compress_device_str = argv[++i];
       } else if (arg == "--decompress-device" && i + 1 < argc) {
@@ -709,26 +799,8 @@ int main(int argc, char* argv[]) {
         force_padding = true;
       } else if (arg == "--metrics-csv" && i + 1 < argc) {
         metrics_csv = argv[++i];
-      } else if (arg == "--preset" && i + 1 < argc) {
-        std::string preset = argv[++i];
-        std::transform(preset.begin(), preset.end(), preset.begin(), ::tolower);
-        if (preset == "fast") {
-          error_bound = 0.01f;
-        } else if (preset == "balanced") {
-          error_bound = 0.001f;
-        } else if (preset == "best") {
-          error_bound = 0.0001f;
-        } else {
-          std::cerr << "Warning: Unknown preset '" << preset
-                    << "', using default error bound\n";
-        }
       } else if (arg == "--original" && i + 1 < argc) {
         original_file = argv[++i];
-      } else if (arg == "-h" || arg == "--help") {
-        print_usage(argv[0]);
-        return 0;
-      } else {
-        std::cerr << "Warning: Unknown argument '" << arg << "'\n";
       }
     }
 
@@ -766,8 +838,7 @@ int main(int argc, char* argv[]) {
       }
 
       if (verify && original_file.empty()) {
-        std::cerr << "Warning: --verify requires --original <file>, skipping "
-                     "verification\n";
+        std::cerr << "Warning: --verify requires --original <file>\n";
         verify = false;
       }
 
