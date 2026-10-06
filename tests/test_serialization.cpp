@@ -84,6 +84,22 @@ int main() {
     check(caesar::serialize(caesar::load(path)) == bytes);
     std::filesystem::remove(path);
   }
+  // Non-power-of-two payload exposes geometric growth and retained excess
+  // capacity. Exercise large correction data without loading any model.
+  {
+    CompressionResult large{};
+    constexpr size_t payload_size = 8 * 1024 * 1024 + 1;
+    large.gae_comp_data.assign(payload_size, 0x5a);
+    large.gaeMetaData.pcaBasis = {std::vector<float>(1024 * 1024 + 1, 0.25f)};
+    auto bytes = caesar::serialize(large);
+    check(bytes.capacity() == bytes.size());
+    auto restored = caesar::deserialize(bytes);
+    check(restored.gae_comp_data == large.gae_comp_data);
+    check(restored.gae_comp_data.capacity() == payload_size);
+    check(restored.gaeMetaData.pcaBasis == large.gaeMetaData.pcaBasis);
+    check(restored.gaeMetaData.pcaBasis[0].capacity() ==
+          restored.gaeMetaData.pcaBasis[0].size());
+  }
   CompressionResult empty{};
   check(caesar::serialize(caesar::deserialize(caesar::serialize(empty))) ==
         caesar::serialize(empty));

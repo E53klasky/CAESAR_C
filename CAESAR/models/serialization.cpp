@@ -43,8 +43,22 @@ FIELDS(CompressionResult, v.model_id, v.correction_method, v.n_frame,
 
 struct Writer {
   std::vector<uint8_t> data;
+  bool measuring = false;
+  size_t measured = 0;
+  void measure(size_t n) {
+    if (n > std::numeric_limits<size_t>::max() - measured)
+      throw std::length_error("CAESAR serialized size overflow");
+    measured += n;
+  }
   template <class... T> void operator()(const T &...v) { (put(v), ...); }
   template <class T> void put(const T &v) {
+    if (measuring) {
+      if constexpr (std::is_arithmetic_v<T> || std::is_enum_v<T>)
+        measure(std::is_same_v<T, bool> ? 1 : sizeof(T));
+      else
+        fields(*this, v);
+      return;
+    }
     if constexpr (std::is_same_v<T, bool>) {
       data.push_back(v ? 1 : 0);
     } else if constexpr (std::is_enum_v<T>) {
@@ -68,10 +82,22 @@ struct Writer {
   }
   void put(const std::string &v) {
     put(uint64_t(v.size()));
+    if (measuring) {
+      measure(v.size());
+      return;
+    }
     data.insert(data.end(), v.begin(), v.end());
   }
   template <class T> void put(const std::vector<T> &v) {
     put(uint64_t(v.size()));
+    if constexpr (std::is_arithmetic_v<T>) {
+      if (measuring) {
+        if (v.size() > std::numeric_limits<size_t>::max() / sizeof(T))
+          throw std::length_error("CAESAR serialized vector size overflow");
+        measure(v.size() * sizeof(T));
+        return;
+      }
+    }
     for (const auto &item : v)
       put(item);
   }
@@ -140,9 +166,12 @@ struct Reader {
     if constexpr (std::is_arithmetic_v<T>) {
       if (n > (size - pos) / sizeof(T))
         throw std::runtime_error("Invalid serialized vector length");
+      // The complete scalar payload fits the input. Allocate once rather than
+      // growing geometrically, which temporarily holds two large allocations.
+      v.reserve(n);
     }
-    // Grow only after decoding each element, avoiding allocations driven by
-    // an untrusted count before its payload has been checked.
+    // Composite elements are decoded before growing their destination because
+    // their variable-length payloads have not yet been validated.
     for (size_t i = 0; i < n; ++i) {
       T item{};
       get(item);
@@ -168,7 +197,12 @@ static_assert(sizeof(int) == 4 && sizeof(size_t) == 8,
 
 std::vector<uint8_t> serialize(const CompressionResult &result) {
   correction_method_from_byte(static_cast<uint8_t>(result.correction_method));
+  // Measure without copying payloads, then allocate the output once.
+  Writer counter;
+  counter.measuring = true;
+  counter(magic, version, result);
   Writer writer;
+  writer.data.reserve(counter.measured);
   writer(magic, version, result);
   return std::move(writer.data);
 }
