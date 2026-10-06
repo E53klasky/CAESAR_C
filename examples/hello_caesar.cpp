@@ -20,9 +20,8 @@ int main(int argc, char **argv) {
     CompressionConfig config;
     config.memory_data = data;
     config.n_frame = 8;
-    config.correction_method = method == "gae"
-                                   ? caesar::CorrectionMethod::GAE
-                                   : caesar::CorrectionMethod::LBRC;
+    config.correction_method = method == "gae" ? caesar::CorrectionMethod::GAE
+                                               : caesar::CorrectionMethod::LBRC;
     // Mean/range normalization and its inverse are handled internally.
     const float target_nrmse = 1e-3f;
     Compressor compressor;
@@ -38,10 +37,10 @@ int main(int argc, char **argv) {
     const double nrmse =
         std::sqrt(difference.square().mean().item<double>()) / range;
     const bool passed = std::isfinite(nrmse) && nrmse <= target_nrmse;
-    std::cout << "Correction: " << method << "\nShape: "
-              << reconstructed.sizes() << "\nTarget NRMSE: "
-              << std::scientific << std::setprecision(8) << target_nrmse
-              << "\nMeasured NRMSE: " << nrmse << "\n"
+    std::cout << "Correction: " << method
+              << "\nShape: " << reconstructed.sizes()
+              << "\nTarget NRMSE: " << std::scientific << std::setprecision(8)
+              << target_nrmse << "\nMeasured NRMSE: " << nrmse << "\n"
               << (passed ? "PASS" : "FAIL") << '\n';
     return passed ? 0 : 1;
   } catch (const std::exception &error) {
