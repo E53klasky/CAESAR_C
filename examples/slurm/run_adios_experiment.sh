@@ -44,13 +44,13 @@ if [[ ! -r "$experiment_pretrain" ]]; then
   exit 1
 fi
 echo "Fine-tuning from $experiment_pretrain"
-experiment_output="${EXPERIMENT_OUTPUT:-$experiment_root/snapshots/adios-finetune}"
+experiment_output="${EXPERIMENT_OUTPUT:-$experiment_root/snapshots/adios-latent256-bs32}"
 mkdir -p "$experiment_output/$experiment_dataset"
 bpls -la "$experiment_bp" > "$experiment_output/$experiment_dataset/bpls.txt"
 # Each job performs three independent runs; hyperparameters stay identical.
-# Default batch_size is 64. Override BATCH_SIZE for ALL jobs if GPU memory requires it.
-for experiment_size in 256 512 128; do
-  experiment_run="$experiment_output/$experiment_dataset/size-$experiment_size"
+# All inputs are 256x256; only the model's latent spatial size changes.
+for experiment_size in 16 32 8; do
+  experiment_run="$experiment_output/$experiment_dataset/latent-$experiment_size"
   if [[ -e "$experiment_run/COMPLETE" ]]; then
     echo "Skipping completed run: $experiment_run"
     continue
@@ -59,10 +59,10 @@ for experiment_size in 256 512 128; do
   if python -u -m pyCAESAR.train_vae3d \
     --config examples/config_adios_experiment.yaml \
     --train_set "$experiment_dataset" --test_set "$experiment_dataset" \
-    --save_path "$experiment_run" --spatial_size "$experiment_size" \
+    --save_path "$experiment_run" --spatial_size 256 --latent_size "$experiment_size" \
     --iterations 100 --model_dim 16 --sr_dim 16 \
     --pretrain "$experiment_pretrain" \
-    --batch_size "${BATCH_SIZE:-64}" --workers 4 --seed 0 \
+    --batch_size "${BATCH_SIZE:-32}" --workers 4 --seed 0 \
     2>&1 | tee "$experiment_run/train.log"; then
     echo "Finished: $experiment_run"
   else

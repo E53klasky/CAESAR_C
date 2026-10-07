@@ -241,6 +241,7 @@ class ResnetCompressor(Compressor):
         channels=3,
         out_channels=3,
         d3=False,
+        latent_size=16,
     ):
         super().__init__(
             dim,
@@ -252,6 +253,9 @@ class ResnetCompressor(Compressor):
             d3,
         )
         self.d3 = d3
+        if latent_size not in (8, 16, 32):
+            raise ValueError("latent_size must be 8, 16, or 32 for 256-pixel inputs")
+        self.latent_spatial_stride = {8: 4, 16: 2, 32: 1}[latent_size]
         self.conv_layer = nn.Conv3d if d3 else nn.Conv2d
         self.deconv_layer = nn.ConvTranspose3d if d3 else nn.ConvTranspose2d
 
@@ -273,7 +277,9 @@ class ResnetCompressor(Compressor):
                         ResnetBlock(
                             dim_in, dim_out, None, True if ind == 0 else False, d3=d3
                         ),
-                        Downsample(dim_out, d3=d3),
+                        Downsample(dim_out, d3=d3,
+                                   stride=(2, self.latent_spatial_stride, self.latent_spatial_stride)
+                                   if d3 and is_last else 2),
                     ]
                 )
             )
@@ -287,7 +293,8 @@ class ResnetCompressor(Compressor):
                     [
                         ResnetBlock(dim_in, dim_out if not is_last else dim_in, d3=d3),
                         (
-                            Upsample(dim_out if not is_last else dim_in, dim_out, d3=d3)
+                            Upsample(dim_out if not is_last else dim_in, dim_out, d3=d3,
+                                     spatial_stride=self.latent_spatial_stride if ind == 0 else 2)
                             if d3
                             else nn.Identity()
                         ),
@@ -349,6 +356,7 @@ class CompressorMix(nn.Module):
         out_channels=3,
         d3=False,
         sr_dim=16,
+        latent_size=16,
     ):
         super().__init__()  # Initialize the nn.Module parent class
 
@@ -360,6 +368,7 @@ class CompressorMix(nn.Module):
             channels,
             out_channels,
             d3,
+            latent_size=latent_size,
         )
 
         # Update channels for sr_model based on entropy_model's output

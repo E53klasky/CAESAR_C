@@ -38,19 +38,26 @@ class SinusoidalPosEmb(nn.Module):
 
 
 class Upsample(nn.Module):
-    def __init__(self, dim_in, dim_out=None, d3=False):
+    def __init__(self, dim_in, dim_out=None, d3=False, spatial_stride=2):
         super().__init__()
         if dim_out is None:
             dim_out = dim_in
 
         self.conv = (
-            nn.ConvTranspose3d(dim_in, dim_out, 4, 2, 1)
+            nn.ConvTranspose3d(dim_in, dim_out, 4, (2, spatial_stride, spatial_stride),
+                               (1, 0 if spatial_stride == 4 else 1, 0 if spatial_stride == 4 else 1))
             if d3
             else nn.ConvTranspose2d(dim_in, dim_out, 4, 2, 1)
         )
+        self.spatial_stride = spatial_stride
+        self.d3 = d3
 
     def forward(self, x):
-        return self.conv(x)
+        result = self.conv(x)
+        if self.d3 and self.spatial_stride == 1:
+            # Kernel 4 with stride 1 produces one extra spatial pixel.
+            result = result[..., :x.shape[-2], :x.shape[-1]]
+        return result
 
 
 class Downsample(nn.Module):
