@@ -341,7 +341,9 @@ if __name__ == "__main__":
         print("Using a single GPU!")
 
     model = model.to(device)
-    model = torch.compile(model)
+    # Eager autograd avoids the compiled backward gradient-shape failure seen
+    # with PyTorch 2.11 on the cluster. This does not change model/loss settings.
+    print("Training with eager autograd (torch.compile disabled)", flush=True)
     # Loss function and optimizer
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)

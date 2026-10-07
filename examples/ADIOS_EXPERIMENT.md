@@ -21,6 +21,9 @@ batch 64, model dimension 16, SR dimension 16, learning rate 0.001,
 lr gamma 0.5, beta 1e-5 to 2e-5, beta switch 0.75, seed 0,
 16 frames, and `--iterations 100` (the existing convention: **100,000
 optimizer steps per model**, not 100 steps or 100 epochs).
+Training uses eager autograd; `torch.compile` is disabled after a compiled
+backward gradient-shape failure on cluster PyTorch 2.11. Hyperparameters,
+architecture, and normalization remain the same.
 
 | Input patch | Logical latent (excluding batch) | Hyperlatent per latent frame |
 | --- | --- | --- |

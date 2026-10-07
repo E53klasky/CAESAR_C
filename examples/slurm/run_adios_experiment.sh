@@ -50,12 +50,21 @@ for experiment_size in 256 512 128; do
     continue
   fi
   mkdir -p "$experiment_run"
-  python -u -m pyCAESAR.train_vae3d \
+  if python -u -m pyCAESAR.train_vae3d \
     --config examples/config_adios_experiment.yaml \
     --train_set "$experiment_dataset" --test_set "$experiment_dataset" \
     --save_path "$experiment_run" --spatial_size "$experiment_size" \
     --iterations 100 --model_dim 16 --sr_dim 16 \
     --batch_size "${BATCH_SIZE:-64}" --workers 4 --seed 0 \
-    2>&1 | tee "$experiment_run/train.log"
+    2>&1 | tee "$experiment_run/train.log"; then
+    echo "Finished: $experiment_run"
+  else
+    experiment_pipe_status=("${PIPESTATUS[@]}")
+    echo "Training failed: dataset=$experiment_dataset size=$experiment_size python_exit=${experiment_pipe_status[0]} tee_exit=${experiment_pipe_status[1]}; see $experiment_run/train.log" >&2
+    if (( experiment_pipe_status[0] != 0 )); then
+      exit "${experiment_pipe_status[0]}"
+    fi
+    exit "${experiment_pipe_status[1]}"
+  fi
   touch "$experiment_run/COMPLETE"
 done
