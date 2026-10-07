@@ -11,8 +11,10 @@ def build_dataset(dataset_args, syn_length=False):
     """Build scientific datasets from the mappings produced by ``convert_args``."""
     # Imported lazily because this module is also used by the model components.
     from pyCAESAR.dataset import ScientificDataset
+    from pyCAESAR.adios_dataset import AdiosPatchDataset
 
-    datasets = [ScientificDataset(dataset_args[name]) for name in dataset_args]
+    datasets = [(AdiosPatchDataset if dataset_args[name].get("adios", {}).get("lazy", False)
+                 else ScientificDataset)(dataset_args[name]) for name in dataset_args]
     if syn_length:
         max_length = np.max([len(dataset) for dataset in datasets])
         for dataset in datasets:
@@ -30,9 +32,14 @@ def convert_args(args, train=True):
     for dataset_name in dataset_names:
         dataset_name = dataset_name.strip()
         dataset_config = config[dataset_name]
-        options = {"name": dataset_name, "data_path": dataset_config["data_path"]}
+        options = dict(config["train_config" if train else "test_config"])
+        options.update({key: value for key, value in dataset_config.items()
+                        if key not in ("train_subset", "test_subset")})
+        options["name"] = dataset_name
         options.update(dataset_config["train_subset" if train else "test_subset"])
-        options.update(config["train_config" if train else "test_config"])
+        if getattr(args, "spatial_size", None) is not None:
+            options["train_size"] = args.spatial_size
+            options["test_size"] = [args.spatial_size, args.spatial_size]
         converted[dataset_name] = options
     return converted
 

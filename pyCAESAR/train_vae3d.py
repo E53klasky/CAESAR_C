@@ -32,7 +32,8 @@ def remove_module_prefix(state_dict):
 
 
 def train_epoch_vae(
-    model, loader, optimizer, scheduler, criterion, loss_beta, device, iteration=0
+    model, loader, optimizer, scheduler, criterion, loss_beta, device, iteration=0,
+    max_iterations=None,
 ):
     """Train the model for one epoch."""
     model.train()
@@ -40,6 +41,8 @@ def train_epoch_vae(
     running_loss2 = torch.zeros((), device=device)
 
     for data_dict in loader:
+        if max_iterations is not None and iteration >= max_iterations:
+            break
         t0 = time.time()
         # inputs = data_dict["input"].to(device, non_blocking=True)
         inputs = (
@@ -67,7 +70,8 @@ def train_epoch_vae(
 
         iteration += 1
         if iteration < 30:
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize()
             print(f"[TIMING] iter {iteration}: {time.time() - t0:.3f}s", flush=True)
 
     epoch_loss1 = (running_loss1 / len(loader.dataset)).item()
@@ -106,6 +110,30 @@ def test_epoch_vae(model, loader, criterion, device):
                 recons_data[idx0[i], idx1[i], start_t[i] : end_t[i]] = outputs[i]
 
     return recons_data, bit_count
+
+
+def test_adios_patches(model, loader, device):
+    """Accumulate valid (unpadded) values without reconstructing the full BP file."""
+    model.eval()
+    squared_error, elements, bit_count = 0.0, 0, 0.0
+    minimum, maximum = float("inf"), -float("inf")
+    with torch.no_grad():
+        for batch in loader:
+            inputs = batch["input"].to(device)
+            results = model(inputs)
+            scale, offset = batch["scale"].to(device), batch["offset"].to(device)
+            original = inputs * scale + offset
+            restored = results["output"] * scale + offset
+            bit_count += results["frame_bit"].sum().item()
+            for i, (t, h, w) in enumerate(batch["valid_shape"].tolist()):
+                reference = original[i, :, :t, :h, :w]
+                error = restored[i, :, :t, :h, :w].double() - reference.double()
+                squared_error += error.square().sum().item()
+                elements += reference.numel()
+                minimum = min(minimum, reference.min().item())
+                maximum = max(maximum, reference.max().item())
+    nrmse = (squared_error / elements) ** 0.5 / (maximum-minimum) if maximum > minimum else 0.0
+    return nrmse, bit_count / elements
 
 
 class Info:
@@ -192,6 +220,10 @@ def get_argument():
     parser.add_argument("--train_set", type=str, default="S3D")
     parser.add_argument("--test_set", type=str, default="E3SM_test")
     parser.add_argument("--config", type=str, default="./configs/config_vae3d.yaml")
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--spatial_size", type=int, choices=[128, 256, 512],
+                        help="Train crop and test block size for latent-size experiments")
 
     args = parser.parse_args()
 
@@ -200,6 +232,8 @@ def get_argument():
 
 if __name__ == "__main__":
     args = get_argument()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     save_path = args.save_path
 
@@ -231,9 +265,9 @@ if __name__ == "__main__":
         merged_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=args.workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=args.workers > 0,
     )
 
     test_args = convert_args(args, train=False)
@@ -243,9 +277,9 @@ if __name__ == "__main__":
             dataset,
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=2,
+            num_workers=min(args.workers, 2),
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=args.workers > 0,
         )
         for dataset in test_datasets
     ]
@@ -346,27 +380,26 @@ if __name__ == "__main__":
             beta,
             device,
             cur_iters,
+            max_iterations=args.iterations,
         )
         train_loss = mse_loss + bbp_loss
 
         eval_index = cur_iters // (args.iterations // 100)
+        eval_index = min(eval_index, len(is_eval) - 1)
         if not is_eval[eval_index]:
             is_eval[eval_index] = True
 
             for test_loader in test_loaders:
                 cur_dataset = test_loader.dataset
                 dname = cur_dataset.dataset_name
-                original_data = cur_dataset.original_data()
-
-                recons_data, bit_count = test_epoch_vae(
-                    model, test_loader, criterion, device
-                )
-                recons_data = cur_dataset.deblocking_hw(recons_data)
-                # this should all be fp32 not fp64
-                bpp = float(bit_count / recons_data.numel())
-
-                nrmse = relative_rmse_error_ornl(original_data, recons_data)
-                nrmse = float(nrmse)
+                if getattr(cur_dataset, "streaming", False):
+                    nrmse, bpp = test_adios_patches(model, test_loader, device)
+                else:
+                    original_data = cur_dataset.original_data()
+                    recons_data, bit_count = test_epoch_vae(model, test_loader, criterion, device)
+                    recons_data = cur_dataset.deblocking_hw(recons_data)
+                    bpp = float(bit_count / recons_data.numel())
+                    nrmse = float(relative_rmse_error_ornl(original_data, recons_data))
 
                 loggers[dname].update(model, cur_iters, nrmse, bpp, dname)
                 loggers[dname].save_last_model(model)

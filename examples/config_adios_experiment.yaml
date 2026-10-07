@@ -1,0 +1,53 @@
+# Explicit layouts from bpls -lv for the three experiment files.
+# For 3D spatial volumes, depth is treated as section (multistep)
+# or as the model frame direction (single-step Hurricane fields).
+re3200:
+  data_path: /lustre/blue2/ranka/eklasky/data/513.513.513.0.000625.Re3200OG.bp
+  data_format: adios
+  adios:
+    lazy: true
+    variables: [critq, pp, ux, uy, uz, vort]
+    axes: [section, height, width]
+    steps_as_time: true
+    step_range: [0, 10]
+  train_subset: {}
+  test_subset: {}
+hurricane:
+  data_path: /lustre/blue2/ranka/eklasky/software_X_data/data/Hurricane_Isabel.bp
+  data_format: adios
+  adios:
+    lazy: true
+    variables: [CLOUDf48.log10, PRECIPf48, PRECIPf48.log10, Pf48,
+                QCLOUDf48, QCLOUDf48.log10, QGRAUPf48, QGRAUPf48.log10,
+                QICEf48, QICEf48.log10, QRAINf48, QRAINf48.log10,
+                QSNOWf48, QSNOWf48.log10, QVAPORf48, TCf48, Uf48, Vf48, Wf48]
+    axes: [time, height, width]
+    steps_as_time: false
+  train_subset: {}
+  test_subset: {}
+input300:
+  data_path: /lustre/blue2/ranka/eklasky/data/input_300stepsOG.bp
+  data_format: adios
+  adios:
+    lazy: true
+    variables: [data]
+    axes: [section, time, height, width]
+    steps_as_time: false
+  train_subset: {}
+  test_subset: {}
+train_config:
+  augment_type: {}
+  inst_norm: true
+  n_frame: 16
+  n_overlap: 0
+  norm_type: mean_range
+  train: true
+  train_size: 256
+test_config:
+  augment_type: {}
+  inst_norm: true
+  n_frame: 16
+  n_overlap: 0
+  norm_type: mean_range
+  test_size: [256, 256]
+  train: false

@@ -32,6 +32,12 @@ above requests 100,000 steps. To load an existing checkpoint, add
 The repository-level `train.sh` contains the same launcher pattern for a real
 multi-dataset training run.
 
+## ADIOS latent-size experiment
+
+See [the three-dataset experiment instructions](ADIOS_EXPERIMENT.md) for the
+three Slurm jobs, automated size sweeps, lazy BP reading, outputs, and the
+compiler/C++ changes needed for a later GAE comparison.
+
 ## In-memory C++ round trip
 
 Build with `-DBUILD_EXAMPLES=ON`, then run `build/examples/hello_caesar` with

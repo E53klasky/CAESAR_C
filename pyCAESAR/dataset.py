@@ -158,6 +158,8 @@ class BaseDataset(Dataset):
         args = deepcopy(args)
         # Universal configs
         self.data_path = args["data_path"]
+        self.data_format = args.get("data_format", "npz")
+        self.adios_config = args.get("adios", {})
 
         self.dataset_name = args.get("name", "Customized Dataset")
 
@@ -332,8 +334,19 @@ class ScientificDataset(BaseDataset):
             else slice(section_range[0], section_range[1])
         )
 
-        with np.load(data_path) as npzfile:
-            data = npzfile["data"][variable_idx, section_range, frame_range]
+        if self.data_format == "adios":
+            from pyCAESAR.data_io import read_adios
+            data = read_adios(data_path, self.adios_config)
+        elif self.data_format == "npz":
+            with np.load(data_path) as npzfile:
+                data = npzfile["data"]
+        else:
+            raise ValueError(f"Unknown data_format: {self.data_format!r}")
+        data = data[:, section_range, frame_range]
+        if variable_idx is not None:
+            data = data[np.atleast_1d(variable_idx)]
+        if any(size == 0 for size in data.shape):
+            raise ValueError("Dataset selection is empty")
 
         if self.resolution is not None:
             data = center_crop(data, self.resolution)
