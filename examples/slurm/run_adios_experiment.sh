@@ -38,7 +38,13 @@ case "$experiment_dataset" in
   input300) experiment_bp=/lustre/blue2/ranka/eklasky/data/input_300stepsOG.bp ;;
   *) exit 2 ;;
 esac
-experiment_output="${EXPERIMENT_OUTPUT:-$experiment_root/snapshots/adios-experiment}"
+experiment_pretrain="${PRETRAIN:-$experiment_root/pretrained/model_bs64_ep100k.pt}"
+if [[ ! -r "$experiment_pretrain" ]]; then
+  echo "Missing pretrained checkpoint: $experiment_pretrain. Run: python model_registry.py caesar_v2 --output pretrained" >&2
+  exit 1
+fi
+echo "Fine-tuning from $experiment_pretrain"
+experiment_output="${EXPERIMENT_OUTPUT:-$experiment_root/snapshots/adios-finetune}"
 mkdir -p "$experiment_output/$experiment_dataset"
 bpls -la "$experiment_bp" > "$experiment_output/$experiment_dataset/bpls.txt"
 # Each job performs three independent runs; hyperparameters stay identical.
@@ -55,6 +61,7 @@ for experiment_size in 256 512 128; do
     --train_set "$experiment_dataset" --test_set "$experiment_dataset" \
     --save_path "$experiment_run" --spatial_size "$experiment_size" \
     --iterations 100 --model_dim 16 --sr_dim 16 \
+    --pretrain "$experiment_pretrain" \
     --batch_size "${BATCH_SIZE:-64}" --workers 4 --seed 0 \
     2>&1 | tee "$experiment_run/train.log"; then
     echo "Finished: $experiment_run"

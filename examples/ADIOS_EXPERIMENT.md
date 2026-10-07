@@ -16,7 +16,9 @@ the `test/` environment script is not included in this checkout. Install
 
 The three `run_<dataset>.sh` launchers share `run_adios_experiment.sh`.
 Each trains independent models at sizes 256, 512, then 128. There is no
-checkpoint transfer between sizes. All use identical training defaults:
+checkpoint transfer between sizes. Every run now starts from the same pretrained
+CAESAR v2 checkpoint, `pretrained/model_bs64_ep100k.pt`, then fine-tunes
+independently. All use identical training defaults:
 batch 64, model dimension 16, SR dimension 16, learning rate 0.001,
 lr gamma 0.5, beta 1e-5 to 2e-5, beta switch 0.75, seed 0,
 16 frames, and `--iterations 100` (the existing convention: **100,000
@@ -38,7 +40,8 @@ Batch 64 at 512 pixels may exceed GPU memory. If necessary use the same
 smaller batch for all three jobs, e.g.
 `sbatch --export=ALL,BATCH_SIZE=1 examples/slurm/train_re3200.slurm`.
 The 7:45 limit may not cover three 100,000-step runs; runtime is unmeasured.
-A rerun skips sizes with a `COMPLETE` marker; interrupted sizes restart.
+A rerun skips sizes with a `COMPLETE` marker; interrupted sizes restart from
+the pretrained checkpoint. Optimizer/scheduler state is not resumed.
 
 ## BP reading and results
 
@@ -62,7 +65,7 @@ step at a time for Re3200. It does not load the 55 GB input300 file into RAM.
 Evaluation also accumulates metrics per block without allocating a full
 reconstruction. The `bpls.txt` file records input metadata for each job.
 
-Each run writes to `snapshots/adios-experiment/<dataset>/size-<size>/`:
+Each run writes to `snapshots/adios-finetune/<dataset>/size-<size>/`:
 `train.log`, `model_bs64_ep100k.pt` (best NRMSE),
 `model_bs64_ep100k_final.pt` (latest), and `model_bs64_ep100k.json`.
 The batch number in filenames follows the selected batch size.
@@ -123,3 +126,32 @@ measured error, total compressed bytes including GAE, compression ratio,
 and encode/decode times at identical error bounds. GAE corrects reconstruction
 toward the bound, so compare total bytes as well as final error. Training logs
 alone do not measure GAE performance.
+
+## Pretrained initialization and measured runtime
+
+The launcher defaults to `pretrained/model_bs64_ep100k.pt` (CAESAR v2).
+If missing, obtain it before submitting jobs:
+
+```bash
+python model_registry.py caesar_v2 --output pretrained
+```
+
+Set `PRETRAIN=/absolute/path/to/checkpoint.pt` in the Slurm submission
+environment to use another compatible checkpoint. All three sizes load the
+same weights; spatial size does not change parameter shapes. Outputs now use
+`snapshots/adios-finetune` to keep the earlier scratch experiment separate.
+Existing running jobs continue with their original scratch initialization.
+
+The input300 log measured about 0.678 seconds per training step at size 256:
+100,000 steps require about **18.8 hours of training compute**, plus ADIOS
+reads, evaluation, and startup. The printed timing starts after a batch has
+been fetched, so it does not include waiting for input. Evaluation also sits
+outside that timing. A rough pixel-count extrapolation gives about 75 hours
+for size 512 and 4.7 hours for size 128, roughly 99 hours per three-size job
+before overhead; these other sizes have not been benchmarked.
+
+The provided 7:45 Slurm limit is too short even for the measured 256 run.
+Set a cluster-permitted longer time limit or reduce `--iterations` consistently
+for all runs. The scripts retain the requested 100,000 steps and original
+Slurm time limit; fine-tuning alone does not reduce runtime at the same step
+count. No automatic resume is implemented.

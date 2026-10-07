@@ -26,7 +26,7 @@ from pyCAESAR.models.utils import (
 def remove_module_prefix(state_dict):
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
-        new_key = k.replace("module.", "")  # remove 'module.' prefix
+        new_key = k.replace("module.", "").replace("_orig_mod.", "")
         new_state_dict[new_key] = v
     return new_state_dict
 
@@ -330,7 +330,7 @@ if __name__ == "__main__":
 
     if args.pretrain != "":
         print("Load pretrain model:", args.pretrain)
-        state_dict = torch.load(args.pretrain)
+        state_dict = torch.load(args.pretrain, map_location="cpu", weights_only=True)
         state_dict = remove_module_prefix(state_dict)
         model.load_state_dict(state_dict)
 
