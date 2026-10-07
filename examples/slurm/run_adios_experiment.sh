@@ -1,12 +1,35 @@
 #!/bin/bash
-set -eo pipefail
+set -Eo pipefail
+trap 'experiment_status=$?; echo "ERROR: line $LINENO: $BASH_COMMAND (exit $experiment_status)" >&2; exit "$experiment_status"' ERR
 experiment_dataset=$1
+echo "Starting CAESAR dataset=$experiment_dataset job=${SLURM_JOB_ID:-local} host=$(hostname)"
 experiment_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$experiment_root"
-source ~/.bashrc
-source ../data/test/set_env_ufl_caesar.sh
-source ../caesar_venv/bin/activate
-set -u
+# Shell startup files can return nonzero in a noninteractive batch shell.
+# Do not apply errexit/the error trap to them; validate the tools afterward.
+trap - ERR
+set +e
+echo "Loading ~/.bashrc"
+source ~/.bashrc || echo "~/.bashrc returned nonzero; continuing batch environment setup" >&2
+set +e
+set +u
+for experiment_env in ../data/test/set_env_ufl_caesar.sh ../caesar_venv/bin/activate; do
+  if [[ ! -r "$experiment_env" ]]; then
+    echo "Missing environment file: $experiment_root/$experiment_env" >&2
+    exit 1
+  fi
+  echo "Loading $experiment_env"
+  experiment_env_status=0
+  source "$experiment_env" || experiment_env_status=$?
+  set +e
+  set +u
+  if (( experiment_env_status != 0 )); then
+    echo "Environment file returned $experiment_env_status; checking required tools next" >&2
+  fi
+done
+trap 'experiment_status=$?; echo "ERROR: line $LINENO: $BASH_COMMAND (exit $experiment_status)" >&2; exit "$experiment_status"' ERR
+set -Eeuo pipefail
+echo "Checking ADIOS and Python/CUDA"
 which bpls
 python -c 'import adios2, torch; print("ADIOS2:", adios2.__version__); print("Torch:", torch.__version__); assert torch.cuda.is_available(), "CUDA required"'
 case "$experiment_dataset" in
