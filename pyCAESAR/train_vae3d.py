@@ -224,8 +224,8 @@ def get_argument():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--spatial_size", type=int, choices=[128, 256, 512],
                         help="Train crop and test block size for latent-size experiments")
-    parser.add_argument("--latent_size", type=int, choices=[8, 16, 32], default=16,
-                        help="Latent spatial size with 256x256 inputs")
+    parser.add_argument("--latent_size", type=int, choices=[16], default=16,
+                        help="Original network uses latent spatial size 16 with 256x256 inputs")
 
     args = parser.parse_args()
 
@@ -310,7 +310,6 @@ if __name__ == "__main__":
             out_channels=1,
             d3=True,
             sr_dim=args.sr_dim,
-            latent_size=args.latent_size,
         )
         print("Load Model with SR")
 
@@ -328,7 +327,6 @@ if __name__ == "__main__":
             channels=1,
             out_channels=1,
             d3=True,
-            latent_size=args.latent_size,
         )
         print("Load Model without SR")
 

@@ -48,8 +48,8 @@ experiment_output="${EXPERIMENT_OUTPUT:-$experiment_root/snapshots/adios-latent2
 mkdir -p "$experiment_output/$experiment_dataset"
 bpls -la "$experiment_bp" > "$experiment_output/$experiment_dataset/bpls.txt"
 # Each job performs three independent runs; hyperparameters stay identical.
-# All inputs are 256x256; only the model's latent spatial size changes.
-for experiment_size in 16 32 8; do
+# Original network, fixed 256x256 inputs and default latent size 16.
+for experiment_size in 16; do
   experiment_run="$experiment_output/$experiment_dataset/latent-$experiment_size"
   if [[ -e "$experiment_run/COMPLETE" ]]; then
     echo "Skipping completed run: $experiment_run"
