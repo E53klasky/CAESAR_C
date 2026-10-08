@@ -332,8 +332,29 @@ class ScientificDataset(BaseDataset):
             else slice(section_range[0], section_range[1])
         )
 
-        with np.load(data_path) as npzfile:
-            data = npzfile["data"][variable_idx, section_range, frame_range]
+        if data_path.rstrip("/").endswith(".bp"):
+            from adios2 import FileReader
+
+            fields = []
+            with FileReader(data_path) as reader:
+                for name, info in sorted(reader.available_variables().items()):
+                    if info["Type"] not in ("float", "double"):
+                        continue
+                    field = np.asarray(reader.read(name, step_selection=[0, 1]))
+                    if field.ndim == 3:  # [time, height, width]
+                        field = field[None, None]
+                    elif field.ndim == 4:  # [section, time, height, width]
+                        field = field[None]
+                    elif field.ndim != 5:
+                        continue
+                    print(f"ADIOS: loaded whole variable {name}: {field.shape}", flush=True)
+                    fields.append(field.astype(np.float32, copy=False))
+            data = np.concatenate(fields, axis=0)
+            variables = slice(None) if variable_idx is None else variable_idx
+            data = data[variables, section_range, frame_range]
+        else:
+            with np.load(data_path) as npzfile:
+                data = npzfile["data"][variable_idx, section_range, frame_range]
 
         if self.resolution is not None:
             data = center_crop(data, self.resolution)
