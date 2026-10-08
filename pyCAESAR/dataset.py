@@ -376,7 +376,13 @@ class ScientificDataset(BaseDataset):
     def post_processing(self, data, var_idx, is_training):
         if is_training:
             data = self.apply_augments(data)
-            data = self.apply_padding_or_crop(data)
+            source = data
+            for _ in range(20):
+                data = self.apply_padding_or_crop(source)
+                if data.max() != data.min():
+                    break
+            else:
+                raise RuntimeError("Could not find a nonconstant training crop")
 
         if self.inst_norm:
             data, offset, scale = self.apply_inst_norm(data, True)
